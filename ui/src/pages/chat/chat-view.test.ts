@@ -686,6 +686,19 @@ describe("chat compaction divider", () => {
   });
 });
 
+describe("chat conversation width", () => {
+  it("applies a configured width once to the centered transcript frame", () => {
+    const container = renderChatView({
+      chatMessageMaxWidth: "82%",
+      messages: [{ role: "assistant", content: "hello", timestamp: 1 }],
+    });
+    const chat = container.querySelector<HTMLElement>(".chat");
+
+    expect(chat?.style.getPropertyValue("--chat-thread-max-width")).toBe("82%");
+    expect(chat?.style.getPropertyValue("--chat-message-max-width")).toBe("100%");
+  });
+});
+
 describe("direct thread avatar mode", () => {
   function sessionsListWithKind(sessionKey: string, kind: "direct" | "group" | "global") {
     return {
@@ -1463,7 +1476,7 @@ describe("chat composer workbench", () => {
 
     // A collapsed rail renders nothing — no icon strip in the layout.
     expect(container.querySelector(".chat-workspace-rail")).toBeNull();
-    const toggle = container.querySelector<HTMLButtonElement>(".chat-workspace-open");
+    const toggle = container.querySelector<HTMLButtonElement>(".chat-workspace-toggle");
     expect(toggle?.getAttribute("aria-label")).toBe("Show session files");
     expect(toggle?.getAttribute("aria-expanded")).toBe("false");
     expect(toggle?.getAttribute("aria-keyshortcuts")).toBe("Meta+Shift+B");
@@ -1523,7 +1536,7 @@ describe("chat composer workbench", () => {
       },
     });
 
-    expect(container.querySelector(".chat-workspace-open")).toBeNull();
+    expect(container.querySelector(".chat-workspace-toggle")).toBeNull();
     expect(container.querySelector(".chat-workspace-rail")).toBeNull();
   });
 
@@ -1576,6 +1589,37 @@ describe("chat composer workbench", () => {
     expect(container.querySelector(".chat-workspace-rail")).not.toBeNull();
     expect(container.querySelector(".chat-workspace-rail__dock")).toBeNull();
     expect(container.querySelector(".chat-workspace-rail__grip")).toBeNull();
+  });
+
+  it("moves the background-tasks rail to a bottom strip on narrow panes", () => {
+    const backgroundTasks = {
+      agentId: "main",
+      collapsed: false,
+      narrowLayout: false,
+      connected: true,
+      canCancel: false,
+      loading: false,
+      error: null,
+      tasks: [],
+      cancellingTaskIds: new Set<string>(),
+      finishedCollapsed: false,
+      onToggleCollapsed: () => undefined,
+      onToggleFinished: () => undefined,
+      onRefresh: () => undefined,
+      onCancel: () => undefined,
+      onOpenSession: () => undefined,
+    };
+
+    const wide = renderChatView({ backgroundTasks });
+    const wideWorkbench = wide.querySelector(".chat-workbench");
+    expect(wideWorkbench?.classList.contains("chat-workbench--tasks-open")).toBe(true);
+    expect(wideWorkbench?.classList.contains("chat-workbench--tasks-dock-bottom")).toBe(false);
+
+    const narrow = renderChatView({ backgroundTasks: { ...backgroundTasks, narrowLayout: true } });
+    const narrowWorkbench = narrow.querySelector(".chat-workbench");
+    expect(narrowWorkbench?.classList.contains("chat-workbench--tasks-open")).toBe(false);
+    expect(narrowWorkbench?.classList.contains("chat-workbench--tasks-dock-bottom")).toBe(true);
+    expect(narrow.querySelector(".chat-tasks-rail")).not.toBeNull();
   });
 
   it("keeps the secondary New session and Export controls suppressed in the composer", () => {

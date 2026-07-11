@@ -594,25 +594,35 @@ class OpenClawShell extends OpenClawLightDomElement {
     });
     if (nextNavCollapsed) {
       void this.updateComplete.then(() => {
-        this.querySelector<HTMLElement>(".shell-nav-expand")?.focus();
+        this.restoreFocusTo(this.querySelector<HTMLElement>(".shell-nav-expand"));
       });
     }
+  }
+
+  /** Focus a restoration target, falling back to the content anchor. The
+   * in-page sidebar toggles are display:none when the Mac app hosts the
+   * toggle in its titlebar (openclaw-native-nav, DashboardWindowController),
+   * so focus must not strand on the body or inside an offscreen drawer. */
+  private restoreFocusTo(target: HTMLElement | null | undefined) {
+    const resolved =
+      target?.isConnected && target.checkVisibility()
+        ? target
+        : this.querySelector<HTMLElement>(".content");
+    resolved?.focus();
   }
 
   private closeNavDrawer(options: { restoreFocus?: boolean } = {}) {
     if (this.navDrawerOpen) {
       this.dismissSidebarTransientMenus();
     }
-    const focusTarget = options.restoreFocus ? this.navDrawerTrigger : null;
+    const trigger = options.restoreFocus ? this.navDrawerTrigger : null;
     this.navDrawerOpen = false;
     this.navDrawerTrigger = null;
-    if (!(focusTarget instanceof HTMLElement) || !focusTarget.isConnected) {
+    if (!options.restoreFocus) {
       return;
     }
     requestAnimationFrame(() => {
-      if (focusTarget.isConnected) {
-        focusTarget.focus();
-      }
+      this.restoreFocusTo(trigger instanceof HTMLElement ? trigger : null);
     });
   }
 
@@ -641,7 +651,7 @@ class OpenClawShell extends OpenClawLightDomElement {
     this.requestUpdate();
     if (dismissedHiddenMenus) {
       void this.updateComplete.then(() => {
-        this.querySelector<HTMLElement>(".topbar-nav-toggle")?.focus();
+        this.restoreFocusTo(this.querySelector<HTMLElement>(".topbar-nav-toggle"));
       });
     }
   };
@@ -862,10 +872,11 @@ class OpenClawShell extends OpenClawLightDomElement {
     const browserPanelAvailable = isBrowserPanelAvailable(gatewaySnapshot);
     const activeRoute = this.routeState.routeId ?? "chat";
     // Plugin tabs share one route; the search picks the active item.
-    const activePluginTabId =
+    const activePluginRef =
       activeRoute === "plugin"
-        ? pluginTabKey(pluginTabRefFromSearch(this.routeState.location?.search ?? ""))
-        : "";
+        ? pluginTabRefFromSearch(this.routeState.location?.search ?? "")
+        : null;
+    const activePluginTabId = activePluginRef ? pluginTabKey(activePluginRef) : "";
     const settingsTakeover = isSettingsNavigationRoute(activeRoute);
     const navDrawerOpen = this.navDrawerOpen && !this.onboarding;
     // Drawer navigation always opens expanded; the desktop collapse preference
@@ -954,6 +965,8 @@ class OpenClawShell extends OpenClawLightDomElement {
                 .basePath=${context.basePath}
                 .activeRouteId=${activeRoute}
                 .activePluginTabId=${activePluginTabId}
+                .activePluginHostId=${activePluginRef?.hostId ?? ""}
+                .activePluginThreadId=${activePluginRef?.threadId ?? ""}
                 .enabledRouteIds=${this.enabledRouteIds()}
                 .sessionKey=${this.activeSessionKey}
                 .connected=${gatewaySnapshot.connected}
@@ -1012,6 +1025,7 @@ class OpenClawShell extends OpenClawLightDomElement {
           "workboard"
             ? "content--workboard"
             : ""}"
+          tabindex="-1"
         >
           ${gatewaySnapshot.connected
             ? nothing
