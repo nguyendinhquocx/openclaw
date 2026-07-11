@@ -1,7 +1,7 @@
-import OpenClawKit
-import OpenClawProtocol
 import CoreGraphics
 import Foundation
+import OpenClawKit
+import OpenClawProtocol
 import OSLog
 
 @MainActor
@@ -11,7 +11,7 @@ final class ExecApprovalsGatewayPrompter {
     private let logger = Logger(subsystem: "ai.openclaw", category: "exec-approvals.gateway")
     private var task: Task<Void, Never>?
 
-    struct GatewayApprovalRequest: Codable, Sendable {
+    struct GatewayApprovalRequest: Codable {
         var id: String
         var request: ExecApprovalPromptRequest
         var createdAtMs: Int
@@ -19,21 +19,21 @@ final class ExecApprovalsGatewayPrompter {
     }
 
     func start() {
-        guard self.task == nil else { return }
-        self.task = Task { [weak self] in
+        SimpleTaskSupport.start(task: &self.task) { [weak self] in
             await self?.run()
         }
     }
 
     func stop() {
-        self.task?.cancel()
-        self.task = nil
+        SimpleTaskSupport.stop(task: &self.task)
     }
 
     private func run() async {
         let stream = await GatewayConnection.shared.subscribe(bufferingNewest: 200)
         for await push in stream {
-            if Task.isCancelled { return }
+            if Task.isCancelled {
+                return
+            }
             await self.handle(push: push)
         }
     }
@@ -45,8 +45,19 @@ final class ExecApprovalsGatewayPrompter {
         do {
             let data = try JSONEncoder().encode(payload)
             let request = try JSONDecoder().decode(GatewayApprovalRequest.self, from: data)
+            // The Gateway emitted this event because its own policy requires a
+            // decision. If this Mac cannot present UI, leave the request
+            // unresolved so the Gateway applies its current timeout fallback.
             guard self.shouldPresent(request: request) else { return }
-            let decision = ExecApprovalsPromptPresenter.prompt(request.request)
+            let nowMs = Int(Date().timeIntervalSince1970 * 1000)
+            let (remainingMs, overflow) = request.expiresAtMs.subtractingReportingOverflow(nowMs)
+            guard !overflow, remainingMs > 0 else { return }
+            guard let decision = await ExecApprovalsPromptPresenter.prompt(
+                request.request,
+                timeoutMs: remainingMs)
+            else {
+                return
+            }
             try await GatewayConnection.shared.requestVoid(
                 method: .execApprovalResolve,
                 params: [
@@ -98,7 +109,9 @@ final class ExecApprovalsGatewayPrompter {
     private static func lastInputSeconds() -> Int? {
         let anyEvent = CGEventType(rawValue: UInt32.max) ?? .null
         let seconds = CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: anyEvent)
-        if seconds.isNaN || seconds.isInfinite || seconds < 0 { return nil }
+        if seconds.isNaN || seconds.isInfinite || seconds < 0 {
+            return nil
+        }
         return Int(seconds.rounded())
     }
 }

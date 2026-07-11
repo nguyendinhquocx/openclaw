@@ -3,8 +3,13 @@ import Foundation
 
 /// A borderless panel that can still accept key focus (needed for typing).
 final class WebChatPanel: NSPanel {
-    override var canBecomeKey: Bool { true }
-    override var canBecomeMain: Bool { true }
+    override var canBecomeKey: Bool {
+        true
+    }
+
+    override var canBecomeMain: Bool {
+        true
+    }
 }
 
 enum WebChatPresentation {
@@ -25,17 +30,21 @@ final class WebChatManager {
     private var windowSessionKey: String?
     private var panelController: WebChatSwiftUIWindowController?
     private var panelSessionKey: String?
+    private var currentChatSessionKey: String?
     private var cachedPreferredSessionKey: String?
 
     var onPanelVisibilityChanged: ((Bool) -> Void)?
 
     var activeSessionKey: String? {
-        self.panelSessionKey ?? self.windowSessionKey
+        self.currentChatSessionKey ?? self.panelSessionKey ?? self.windowSessionKey
     }
 
     func show(sessionKey: String) {
         self.closePanel()
         if let controller = self.windowController {
+            // The window shell switches sessions in place (sidebar, /new);
+            // windowSessionKey tracks those switches, so a window already on
+            // the requested session must not be torn down and re-bootstrapped.
             if self.windowSessionKey == sessionKey {
                 controller.show()
                 return
@@ -49,8 +58,13 @@ final class WebChatManager {
         controller.onVisibilityChanged = { [weak self] visible in
             self?.onPanelVisibilityChanged?(visible)
         }
+        controller.onSessionKeyChanged = { [weak self] key in
+            self?.windowSessionKey = key
+            self?.currentChatSessionKey = key
+        }
         self.windowController = controller
         self.windowSessionKey = sessionKey
+        self.currentChatSessionKey = sessionKey
         controller.show()
     }
 
@@ -79,9 +93,20 @@ final class WebChatManager {
         controller.onVisibilityChanged = { [weak self] visible in
             self?.onPanelVisibilityChanged?(visible)
         }
+        controller.onSessionKeyChanged = { [weak self] key in
+            self?.panelSessionKey = key
+            self?.currentChatSessionKey = key
+        }
         self.panelController = controller
         self.panelSessionKey = sessionKey
+        self.currentChatSessionKey = sessionKey
         controller.presentAnchored(anchorProvider: anchorProvider)
+    }
+
+    func recordActiveSessionKey(_ sessionKey: String) {
+        let trimmed = sessionKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        self.currentChatSessionKey = trimmed
     }
 
     func closePanel() {
@@ -102,17 +127,12 @@ final class WebChatManager {
         self.panelController?.close()
         self.panelController = nil
         self.panelSessionKey = nil
+        self.currentChatSessionKey = nil
         self.cachedPreferredSessionKey = nil
     }
 
     func close() {
-        self.windowController?.close()
-        self.windowController = nil
-        self.windowSessionKey = nil
-        self.panelController?.close()
-        self.panelController = nil
-        self.panelSessionKey = nil
-        self.cachedPreferredSessionKey = nil
+        self.resetTunnels()
     }
 
     private func panelHidden() {

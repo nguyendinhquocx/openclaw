@@ -40,7 +40,9 @@ func LoadTranslationMemory(path string) (*TranslationMemory, error) {
 		}
 		return nil, err
 	}
-	defer file.Close()
+	defer func() {
+		_ = file.Close()
+	}()
 
 	reader := bufio.NewReader(file)
 	for {
@@ -52,7 +54,7 @@ func LoadTranslationMemory(path string) (*TranslationMemory, error) {
 				if err := json.Unmarshal([]byte(trimmed), &entry); err != nil {
 					return nil, fmt.Errorf("translation memory decode failed: %w", err)
 				}
-				if entry.CacheKey != "" {
+				if entry.CacheKey != "" && strings.TrimSpace(entry.Translated) != "" {
 					tm.entries[entry.CacheKey] = entry
 				}
 			}
@@ -69,7 +71,13 @@ func LoadTranslationMemory(path string) (*TranslationMemory, error) {
 
 func (tm *TranslationMemory) Get(cacheKey string) (TMEntry, bool) {
 	entry, ok := tm.entries[cacheKey]
-	return entry, ok
+	if !ok {
+		return TMEntry{}, false
+	}
+	if strings.TrimSpace(entry.Translated) == "" {
+		return TMEntry{}, false
+	}
+	return entry, true
 }
 
 func (tm *TranslationMemory) Put(entry TMEntry) {

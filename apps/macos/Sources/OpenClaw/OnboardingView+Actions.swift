@@ -1,54 +1,40 @@
 import AppKit
+import Foundation
 import OpenClawDiscovery
 import OpenClawIPC
-import Foundation
 import SwiftUI
 
 extension OnboardingView {
     func selectLocalGateway() {
+        self.defaultsToLocalGateway = false
         self.state.connectionMode = .local
         self.preferredGatewayID = nil
         self.showAdvancedConnection = false
+        self.showRemoteChoices = false
         GatewayDiscoveryPreferences.setPreferredStableID(nil)
     }
 
     func selectUnconfiguredGateway() {
-        Task { await self.onboardingWizard.cancelIfRunning() }
+        self.defaultsToLocalGateway = false
         self.state.connectionMode = .unconfigured
         self.preferredGatewayID = nil
         self.showAdvancedConnection = false
+        self.showRemoteChoices = false
         GatewayDiscoveryPreferences.setPreferredStableID(nil)
     }
 
     func selectRemoteGateway(_ gateway: GatewayDiscoveryModel.DiscoveredGateway) {
-        Task { await self.onboardingWizard.cancelIfRunning() }
+        self.defaultsToLocalGateway = false
         self.preferredGatewayID = gateway.stableID
         GatewayDiscoveryPreferences.setPreferredStableID(gateway.stableID)
-
-        if self.state.remoteTransport == .direct {
-            if let url = GatewayDiscoveryHelpers.directUrl(for: gateway) {
-                self.state.remoteUrl = url
-            }
-        } else if let host = GatewayDiscoveryHelpers.sanitizedTailnetHost(gateway.tailnetDns) ?? gateway.lanHost {
-            let user = NSUserName()
-            self.state.remoteTarget = GatewayDiscoveryModel.buildSSHTarget(
-                user: user,
-                host: host,
-                port: gateway.sshPort)
-            OpenClawConfigFile.setRemoteGatewayUrl(host: host, port: gateway.gatewayPort)
-        }
-        self.state.remoteCliPath = gateway.cliPath ?? ""
+        GatewayDiscoverySelectionSupport.applyRemoteSelection(gateway: gateway, state: self.state)
 
         self.state.connectionMode = .remote
         MacNodeModeCoordinator.shared.setPreferredGatewayStableID(gateway.stableID)
     }
 
     func openSettings(tab: SettingsTab) {
-        SettingsTabRouter.request(tab)
-        self.openSettings()
-        DispatchQueue.main.async {
-            NotificationCenter.default.post(name: .openclawSelectSettingsTab, object: tab)
-        }
+        AppNavigationActions.openSettings(tab: tab)
     }
 
     func handleBack() {
@@ -58,7 +44,9 @@ extension OnboardingView {
     }
 
     func handleNext() {
-        if self.isWizardBlocking { return }
+        // All callers (Next button, chat handoff) honor the same page gates.
+        guard self.canAdvance else { return }
+        self.commitRecommendedConnectionIfNeeded(for: self.activePageIndex)
         if self.currentPage < self.pageCount - 1 {
             withAnimation { self.currentPage += 1 }
         } else {
@@ -66,10 +54,23 @@ extension OnboardingView {
         }
     }
 
+    func commitRecommendedConnectionIfNeeded(for pageIndex: Int) {
+        if pageIndex == self.connectionPageIndex,
+           self.defaultsToLocalGateway,
+           self.state.connectionMode == .unconfigured
+        {
+            self.selectLocalGateway()
+        }
+    }
+
     func finish() {
-        UserDefaults.standard.set(true, forKey: "openclaw.onboardingSeen")
-        UserDefaults.standard.set(currentOnboardingVersion, forKey: onboardingVersionKey)
+        OnboardingController.markComplete()
         OnboardingController.shared.close()
+        // Land people in the real conversation, not on an empty desktop: the
+        // agent chat is the product, and it is verified working by now.
+        if self.state.connectionMode != .unconfigured {
+            AppNavigationActions.openChat()
+        }
     }
 
     func copyToPasteboard(_ text: String) {
@@ -78,71 +79,5 @@ extension OnboardingView {
         pb.setString(text, forType: .string)
         self.copied = true
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { self.copied = false }
-    }
-
-    func startAnthropicOAuth() {
-        guard !self.anthropicAuthBusy else { return }
-        self.anthropicAuthBusy = true
-        defer { self.anthropicAuthBusy = false }
-
-        do {
-            let pkce = try AnthropicOAuth.generatePKCE()
-            self.anthropicAuthPKCE = pkce
-            let url = AnthropicOAuth.buildAuthorizeURL(pkce: pkce)
-            NSWorkspace.shared.open(url)
-            self.anthropicAuthStatus = "Browser opened. After approving, paste the `code#state` value here."
-        } catch {
-            self.anthropicAuthStatus = "Failed to start OAuth: \(error.localizedDescription)"
-        }
-    }
-
-    @MainActor
-    func finishAnthropicOAuth() async {
-        guard !self.anthropicAuthBusy else { return }
-        guard let pkce = self.anthropicAuthPKCE else { return }
-        self.anthropicAuthBusy = true
-        defer { self.anthropicAuthBusy = false }
-
-        guard let parsed = AnthropicOAuthCodeState.parse(from: self.anthropicAuthCode) else {
-            self.anthropicAuthStatus = "OAuth failed: missing or invalid code/state."
-            return
-        }
-
-        do {
-            let creds = try await AnthropicOAuth.exchangeCode(
-                code: parsed.code,
-                state: parsed.state,
-                verifier: pkce.verifier)
-            try OpenClawOAuthStore.saveAnthropicOAuth(creds)
-            self.refreshAnthropicOAuthStatus()
-            self.anthropicAuthStatus = "Connected. OpenClaw can now use Claude."
-        } catch {
-            self.anthropicAuthStatus = "OAuth failed: \(error.localizedDescription)"
-        }
-    }
-
-    func pollAnthropicClipboardIfNeeded() {
-        guard self.currentPage == self.anthropicAuthPageIndex else { return }
-        guard self.anthropicAuthPKCE != nil else { return }
-        guard !self.anthropicAuthBusy else { return }
-        guard self.anthropicAuthAutoDetectClipboard else { return }
-
-        let pb = NSPasteboard.general
-        let changeCount = pb.changeCount
-        guard changeCount != self.anthropicAuthLastPasteboardChangeCount else { return }
-        self.anthropicAuthLastPasteboardChangeCount = changeCount
-
-        guard let raw = pb.string(forType: .string), !raw.isEmpty else { return }
-        guard let parsed = AnthropicOAuthCodeState.parse(from: raw) else { return }
-        guard let pkce = self.anthropicAuthPKCE, parsed.state == pkce.verifier else { return }
-
-        let next = "\(parsed.code)#\(parsed.state)"
-        if self.anthropicAuthCode != next {
-            self.anthropicAuthCode = next
-            self.anthropicAuthStatus = "Detected `code#state` from clipboard."
-        }
-
-        guard self.anthropicAuthAutoConnectClipboard else { return }
-        Task { await self.finishAnthropicOAuth() }
     }
 }

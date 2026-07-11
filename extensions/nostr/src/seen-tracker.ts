@@ -3,7 +3,12 @@
  * Prevents unbounded memory growth under high load or abuse.
  */
 
-export interface SeenTrackerOptions {
+import {
+  resolveIntegerOption,
+  resolvePositiveTimerTimeoutMs,
+} from "openclaw/plugin-sdk/number-runtime";
+
+interface SeenTrackerOptions {
   /** Maximum number of entries to track (default: 100,000) */
   maxEntries?: number;
   /** TTL in milliseconds (default: 1 hour) */
@@ -42,9 +47,9 @@ interface Entry {
  * Create a new seen tracker with LRU eviction and TTL expiration.
  */
 export function createSeenTracker(options?: SeenTrackerOptions): SeenTracker {
-  const maxEntries = options?.maxEntries ?? 100_000;
-  const ttlMs = options?.ttlMs ?? 60 * 60 * 1000; // 1 hour
-  const pruneIntervalMs = options?.pruneIntervalMs ?? 10 * 60 * 1000; // 10 minutes
+  const maxEntries = resolveIntegerOption(options?.maxEntries, 100_000, { min: 1 });
+  const ttlMs = resolvePositiveTimerTimeoutMs(options?.ttlMs, 60 * 60 * 1000);
+  const pruneIntervalMs = resolvePositiveTimerTimeoutMs(options?.pruneIntervalMs, 10 * 60 * 1000);
 
   // Main storage
   const entries = new Map<string, Entry>();
@@ -137,6 +142,27 @@ export function createSeenTracker(options?: SeenTrackerOptions): SeenTracker {
     entries.delete(idToEvict);
   }
 
+  function insertAtFront(id: string, seenAt: number): void {
+    const newEntry: Entry = {
+      seenAt,
+      prev: null,
+      next: head,
+    };
+
+    if (head) {
+      const headEntry = entries.get(head);
+      if (headEntry) {
+        headEntry.prev = id;
+      }
+    }
+
+    entries.set(id, newEntry);
+    head = id;
+    if (!tail) {
+      tail = id;
+    }
+  }
+
   // Prune expired entries
   function pruneExpired(): void {
     const now = Date.now();
@@ -180,25 +206,7 @@ export function createSeenTracker(options?: SeenTrackerOptions): SeenTracker {
       evictLRU();
     }
 
-    // Add new entry at front
-    const newEntry: Entry = {
-      seenAt: now,
-      prev: null,
-      next: head,
-    };
-
-    if (head) {
-      const headEntry = entries.get(head);
-      if (headEntry) {
-        headEntry.prev = id;
-      }
-    }
-
-    entries.set(id, newEntry);
-    head = id;
-    if (!tail) {
-      tail = id;
-    }
+    insertAtFront(id, now);
   }
 
   function has(id: string): boolean {
@@ -268,24 +276,7 @@ export function createSeenTracker(options?: SeenTrackerOptions): SeenTracker {
     for (let i = ids.length - 1; i >= 0; i--) {
       const id = ids[i];
       if (!entries.has(id) && entries.size < maxEntries) {
-        const newEntry: Entry = {
-          seenAt: now,
-          prev: null,
-          next: head,
-        };
-
-        if (head) {
-          const headEntry = entries.get(head);
-          if (headEntry) {
-            headEntry.prev = id;
-          }
-        }
-
-        entries.set(id, newEntry);
-        head = id;
-        if (!tail) {
-          tail = id;
-        }
+        insertAtFront(id, now);
       }
     }
   }
