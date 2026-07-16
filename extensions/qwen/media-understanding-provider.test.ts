@@ -2,11 +2,17 @@
 import {
   createRequestCaptureJsonFetch,
   installPinnedHostnameTestHooks,
-} from "openclaw/plugin-sdk/test-env";
+} from "openclaw/plugin-sdk/test-media-understanding";
 import { describe, expect, it } from "vitest";
-import { describeQwenVideo } from "./media-understanding-provider.js";
+import { buildQwenMediaUnderstandingProvider } from "./media-understanding-provider.js";
 
 installPinnedHostnameTestHooks();
+
+const qwenProvider = buildQwenMediaUnderstandingProvider();
+const describeQwenVideo = qwenProvider.describeVideo;
+if (!describeQwenVideo) {
+  throw new Error("expected Qwen video description capability");
+}
 
 function oversizedJsonResponse(params: { chunkCount: number; chunkSize: number }): {
   response: Response;
