@@ -639,6 +639,66 @@ jobs:
             "platforms;android-36" \
             "build-tools;36.0.0"
 
+      # Same-repo runs carry the Gradle user home (dependency, wrapper, and
+      # build caches) on a Blacksmith sticky disk: the setup-java gradle cache
+      # above is evicted so quickly under the repo quota that it rarely
+      # restores, leaving every run to re-resolve the full dependency graph.
+      # Fork PRs and manual dispatches must never produce writable
+      # repository-global snapshots, so they keep the GitHub cache path (their
+      # runs-on already selects non-Blacksmith ubuntu-24.04 runners).
+      - name: Mount Gradle sticky disk
+        if: github.event_name != 'workflow_dispatch' && github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == 'openclaw/openclaw')
+        uses: useblacksmith/stickydisk@5b350170ae4ef55b536b548ef5f5896e76a6b54f # v1.4.0
+        with:
+          # One stable disk per matrix task. The v1 per-PR/per-dependency-hash
+          # keys minted a new backing disk for every PR and dependency bump
+          # and helped saturate Blacksmith's installation-wide sticky-disk
+          # budget, 429-failing every mount. Task scope stays in the key: each
+          # matrix task resolves a different dependency set, and a shared key
+          # would let a light task (ktlint) pin a thin snapshot the heavy
+          # build lanes can never repair. Dependency-file changes live in the
+          # runtime fingerprint marker below instead of the key.
+          key: ${{ github.repository }}-gradle-v2-${{ matrix.task }}
+          path: /var/tmp/openclaw-gradle
+          # Single semantic writer: only protected pushes commit, so
+          # pull_request clones stay read-only and the snapshot tracks main.
+          # Explicit true (not on-change) because the allocated-byte heuristic
+          # can miss a same-size refresh and strand the fingerprint marker;
+          # v1.4.0 still skips commit after failed/cancelled steps, so a
+          # broken build cannot poison this key.
+          commit: ${{ github.event_name != 'pull_request' && 'true' || 'false' }}
+
+      - name: Point Gradle at the sticky disk
+        if: github.event_name != 'workflow_dispatch' && github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == 'openclaw/openclaw')
+        shell: bash
+        env:
+          # Gradle caches are content-addressed, so a stale snapshot is safe
+          # to restore (obsolete entries are simply ignored). The fingerprint
+          # only bounds disk growth: when dependency inputs change, the writer
+          # rebuilds its snapshot from scratch so retired dependency artifacts
+          # do not accumulate on the O(1) key forever.
+          GRADLE_DEPS_FINGERPRINT: ${{ hashFiles('apps/android/**/*.gradle*', 'apps/android/**/gradle-wrapper.properties', 'apps/android/gradle/libs.versions.toml') }}
+          STICKY_WRITER: ${{ github.event_name != 'pull_request' && 'true' || 'false' }}
+        run: |
+          set -euo pipefail
+          sticky_root=/var/tmp/openclaw-gradle
+          marker="$sticky_root/.openclaw-gradle-deps-fingerprint"
+          disk_fingerprint=""
+          if [ -f "$marker" ]; then
+            disk_fingerprint="$(<"$marker")"
+          fi
+          if [ "$disk_fingerprint" != "$GRADLE_DEPS_FINGERPRINT" ]; then
+            if [ "$STICKY_WRITER" = "true" ]; then
+              echo "Gradle dependency inputs changed; rebuilding snapshot cold to drop retired artifacts"
+              rm -rf "$sticky_root/gradle-user-home"
+              printf '%s\n' "$GRADLE_DEPS_FINGERPRINT" > "$marker"
+            else
+              echo "Gradle dependency inputs changed since snapshot; content-addressed caches stay safe to reuse"
+            fi
+          fi
+          mkdir -p "$sticky_root/gradle-user-home"
+          echo "GRADLE_USER_HOME=$sticky_root/gradle-user-home" >> "$GITHUB_ENV"
+
       - name: Run Android ${{ matrix.task }}
         working-directory: apps/android
         run: ${{ matrix.command }}
