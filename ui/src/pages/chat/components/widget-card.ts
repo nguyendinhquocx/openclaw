@@ -1,12 +1,15 @@
 import { html, nothing } from "lit";
 import { keyed } from "lit/directives/keyed.js";
 import { ensureCustomElementDefined } from "../../../app/lazy-custom-element.ts";
+import { icons } from "../../../components/icons.ts";
 import {
   dispatchWidgetPrompt,
   WIDGET_PROMPT_EVENT,
   type WidgetPromptEventDetail,
 } from "../../../components/mcp-app-security.ts";
+import "../../../components/web-awesome.ts";
 import { t } from "../../../i18n/index.ts";
+import { canvasWidgetNameForDocument, type BoardProvider } from "../../../lib/board/provider.ts";
 import type { ToolPreview } from "../../../lib/chat/tool-cards.ts";
 import {
   isInternalCanvasEntryUrl,
@@ -14,7 +17,9 @@ import {
   resolveEmbedSandbox,
   type EmbedSandboxMode,
 } from "../../../lib/chat/tool-display.ts";
+import { showToast } from "../../../lib/toast.ts";
 import type { SidebarContent } from "./chat-sidebar.ts";
+import { exportWidget } from "./widget-export.ts";
 import { installWidgetThemeObserver, postWidgetTheme } from "./widget-theme.ts";
 
 export { WIDGET_PROMPT_EVENT };
@@ -27,7 +32,65 @@ type WidgetCardOptions = {
   embedSandboxMode?: EmbedSandboxMode;
   allowExternalEmbedUrls?: boolean;
   sessionKey?: string;
+  boardProvider?: BoardProvider;
 };
+
+async function pinCanvasWidget(
+  event: Event,
+  preview: ToolPreview,
+  provider: BoardProvider,
+  name: string,
+): Promise<void> {
+  const button = event.currentTarget;
+  if (!(button instanceof HTMLButtonElement) || !preview.viewId) {
+    return;
+  }
+  button.disabled = true;
+  button.textContent = t("chat.toolCards.pinToDashboardPending");
+  try {
+    await provider.pinWidget({
+      docId: preview.viewId,
+      name,
+      ...(preview.title?.trim() ? { title: preview.title.trim() } : {}),
+    });
+    button.textContent = t("chat.toolCards.pinnedToDashboard");
+    button.dataset.pinned = "true";
+  } catch (error) {
+    button.disabled = false;
+    button.textContent = t("chat.toolCards.pinToDashboard");
+    button.title = error instanceof Error ? error.message : String(error);
+  }
+}
+
+function canvasWidgetName(preview: ToolPreview): string | undefined {
+  if (preview.boardWidgetName) {
+    return preview.boardWidgetName;
+  }
+  return preview.viewId ? canvasWidgetNameForDocument(preview.viewId) : undefined;
+}
+
+function isManagedCanvasDocumentPreview(preview: ToolPreview): boolean {
+  const viewId = preview.viewId?.trim();
+  const entryUrl = preview.url?.trim();
+  if (!viewId || !entryUrl) {
+    return false;
+  }
+  try {
+    const entry = new URL(entryUrl, "http://localhost");
+    const prefix = "/__openclaw__/canvas/documents/";
+    if (entry.origin !== "http://localhost" || !entry.pathname.startsWith(prefix)) {
+      return false;
+    }
+    const [encodedDocumentId, entrypoint] = entry.pathname.slice(prefix.length).split("/", 2);
+    if (!encodedDocumentId || !entrypoint) {
+      return false;
+    }
+    const documentId = decodeURIComponent(encodedDocumentId);
+    return /^[A-Za-z0-9._-]+$/u.test(documentId) && documentId === viewId;
+  } catch {
+    return false;
+  }
+}
 
 // Sandboxed widget documents report their content height via postMessage so the
 // preview iframe can fit short/tall widgets. The event source must be one of our
@@ -284,6 +347,63 @@ function renderWidgetContent(
   return nothing;
 }
 
+function handleWidgetExportAction(
+  event: CustomEvent<{ item: { value?: string } }>,
+  title: string | undefined,
+) {
+  const value = event.detail.item.value;
+  if (value !== "copy" && value !== "download") {
+    return;
+  }
+  const dropdown = event.currentTarget;
+  const frame =
+    dropdown instanceof HTMLElement
+      ? dropdown
+          .closest(".chat-tool-card__preview")
+          ?.querySelector<HTMLIFrameElement>(".chat-tool-card__preview-frame")
+      : null;
+  if (!frame) {
+    showToast({ message: t("chat.toolCards.widgetExportFailed") });
+    return;
+  }
+  void exportWidget(value, frame, title)
+    .then((result) => {
+      if (result === "rerender-required") {
+        showToast({ message: t("chat.toolCards.widgetExportRerender") });
+      }
+    })
+    .catch(() => {
+      showToast({ message: t("chat.toolCards.widgetExportFailed") });
+    });
+}
+
+function renderWidgetActions(preview: ToolPreview) {
+  if (preview.mcpApp || !isInternalCanvasEntryUrl(preview.url)) {
+    return nothing;
+  }
+  return html`
+    <wa-dropdown
+      class="chat-tool-card__widget-actions"
+      placement="bottom-end"
+      aria-label=${t("chat.toolCards.widgetActions")}
+      @wa-select=${(event: CustomEvent<{ item: { value?: string } }>) =>
+        handleWidgetExportAction(event, preview.title)}
+    >
+      <button
+        slot="trigger"
+        type="button"
+        class="btn btn--ghost btn--icon chat-tool-card__widget-actions-trigger"
+        aria-label=${t("chat.toolCards.widgetActions")}
+        title=${t("chat.toolCards.widgetActions")}
+      >
+        ${icons.moreHorizontal}
+      </button>
+      <wa-dropdown-item value="copy">${t("chat.toolCards.copyToClipboard")}</wa-dropdown-item>
+      <wa-dropdown-item value="download">${t("chat.toolCards.downloadFile")}</wa-dropdown-item>
+    </wa-dropdown>
+  `;
+}
+
 function renderWidgetCard(
   preview: ToolPreview | undefined,
   surface: "chat_tool" | "chat_message" | "sidebar",
@@ -304,13 +424,41 @@ function renderWidgetCard(
   }
   const label = preview.title?.trim() || t("chat.toolCards.canvas");
   const contentKind = preview.mcpApp ? "mcp-app" : "canvas-html";
-  // Keep the reserved action hook hidden until populated so it adds no layout
-  // or accessibility chrome to today's widget card.
+  const pinName = canvasWidgetName(preview);
+  const pinned = Boolean(
+    pinName &&
+    options?.boardProvider?.snapshot$.value.widgets.some((widget) => widget.name === pinName),
+  );
+  const pinAction =
+    contentKind === "canvas-html" &&
+    preview.sandbox === "scripts" &&
+    options?.boardProvider?.canPinWidgets &&
+    isManagedCanvasDocumentPreview(preview) &&
+    pinName
+      ? html`<button
+          class="chat-tool-card__widget-action"
+          type="button"
+          data-pin-widget
+          ?disabled=${pinned}
+          ?data-pinned=${pinned}
+          title=${t(pinned ? "chat.toolCards.pinnedToDashboard" : "chat.toolCards.pinToDashboard")}
+          aria-label=${t(
+            pinned ? "chat.toolCards.pinnedToDashboard" : "chat.toolCards.pinToDashboard",
+          )}
+          @click=${(event: Event) =>
+            void pinCanvasWidget(event, preview, options.boardProvider!, pinName)}
+        >
+          ${t(pinned ? "chat.toolCards.pinnedToDashboard" : "chat.toolCards.pinToDashboard")}
+        </button>`
+      : nothing;
   return html`
     <div class="chat-tool-card__preview" data-kind="canvas" data-surface=${surface}>
       <div class="chat-tool-card__preview-header">
         <span class="chat-tool-card__preview-label">${label}</span>
-        <div data-widget-actions hidden></div>
+        <div class="chat-tool-card__preview-actions">
+          <div data-widget-actions ?hidden=${pinAction === nothing}>${pinAction}</div>
+          ${renderWidgetActions(preview)}
+        </div>
       </div>
       <div class="chat-tool-card__preview-panel" data-side="canvas">
         ${renderWidgetContent(contentKind, preview, options)}
