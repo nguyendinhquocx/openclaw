@@ -152,15 +152,18 @@ import {
 } from "./audit-activity.js";
 import { AuditEventSchema, AuditListParamsSchema, AuditListResultSchema } from "./audit.js";
 import {
+  BoardActionParamsSchema,
   BoardCanvasDocumentSourceSchema,
   BoardChangedEventSchema,
   BoardCommandEventSchema,
   BoardCommandSchema,
+  BoardDataReadParamsSchema,
   BoardEventParamsSchema,
   BoardFocusTabCommandSchema,
   BoardGetParamsSchema,
   BoardMcpAppDescriptorSchema,
   BoardOpSchema,
+  BoardPromptAuthorizeParamsSchema,
   BoardSetChatDockCommandSchema,
   BoardSnapshotSchema,
   BoardTabCreateOpSchema,
@@ -170,14 +173,18 @@ import {
   BoardTabUpdateOpSchema,
   BoardUpdateParamsSchema,
   BoardWidgetContentSchema,
+  BoardWidgetAppViewParamsSchema,
+  BoardWidgetAppViewResultSchema,
   BoardWidgetGrantParamsSchema,
   BoardWidgetHtmlContentSchema,
   BoardWidgetMcpAppContentSchema,
+  BoardWidgetMcpAppPutContentSchema,
   BoardWidgetMoveOpSchema,
   BoardWidgetPutContentSchema,
   BoardWidgetPutParamsSchema,
   BoardWidgetRemoveOpSchema,
   BoardWidgetResizeOpSchema,
+  BoardWidgetDeclaredSchema,
   BoardWidgetSchema,
 } from "./board.js";
 import {
@@ -280,7 +287,11 @@ import {
   WorkerEnvironmentStateSchema,
   WorkerTunnelStatusSchema,
 } from "./environments.js";
-import { GatewayErrorDetailsSchema } from "./error-codes.js";
+import {
+  GatewayErrorDetailsSchema,
+  McpAppViewExpiredErrorDetailsSchema,
+  MissingScopeErrorDetailsSchema,
+} from "./error-codes.js";
 import {
   ExecApprovalsGetParamsSchema,
   ExecApprovalsNodeGetParamsSchema,
@@ -590,6 +601,7 @@ import {
 export const ProtocolSchemas = {
   BoardTab: BoardTabSchema,
   BoardWidget: BoardWidgetSchema,
+  BoardWidgetDeclared: BoardWidgetDeclaredSchema,
   BoardSnapshot: BoardSnapshotSchema,
   BoardTabCreateOp: BoardTabCreateOpSchema,
   BoardTabUpdateOp: BoardTabUpdateOpSchema,
@@ -602,6 +614,7 @@ export const ProtocolSchemas = {
   BoardMcpAppDescriptor: BoardMcpAppDescriptorSchema,
   BoardWidgetHtmlContent: BoardWidgetHtmlContentSchema,
   BoardWidgetMcpAppContent: BoardWidgetMcpAppContentSchema,
+  BoardWidgetMcpAppPutContent: BoardWidgetMcpAppPutContentSchema,
   BoardCanvasDocumentSource: BoardCanvasDocumentSourceSchema,
   BoardWidgetContent: BoardWidgetContentSchema,
   BoardWidgetPutContent: BoardWidgetPutContentSchema,
@@ -609,7 +622,12 @@ export const ProtocolSchemas = {
   BoardUpdateParams: BoardUpdateParamsSchema,
   BoardWidgetPutParams: BoardWidgetPutParamsSchema,
   BoardWidgetGrantParams: BoardWidgetGrantParamsSchema,
+  BoardWidgetAppViewParams: BoardWidgetAppViewParamsSchema,
+  BoardWidgetAppViewResult: BoardWidgetAppViewResultSchema,
   BoardEventParams: BoardEventParamsSchema,
+  BoardPromptAuthorizeParams: BoardPromptAuthorizeParamsSchema,
+  BoardDataReadParams: BoardDataReadParamsSchema,
+  BoardActionParams: BoardActionParamsSchema,
   BoardChangedEvent: BoardChangedEventSchema,
   BoardFocusTabCommand: BoardFocusTabCommandSchema,
   BoardSetChatDockCommand: BoardSetChatDockCommandSchema,
@@ -628,6 +646,8 @@ export const ProtocolSchemas = {
   StateVersion: StateVersionSchema,
   Snapshot: SnapshotSchema,
   ErrorShape: ErrorShapeSchema,
+  MissingScopeErrorDetails: MissingScopeErrorDetailsSchema,
+  McpAppViewExpiredErrorDetails: McpAppViewExpiredErrorDetailsSchema,
   GatewayErrorDetails: GatewayErrorDetailsSchema,
   GatewaySuspendTaskBlocker: GatewaySuspendTaskBlockerSchema,
   GatewaySuspendBlocker: GatewaySuspendBlockerSchema,

@@ -280,6 +280,7 @@ export const en: TranslationMap = {
     genericSubtitle: "Something went wrong while loading this panel.",
     staleTitle: "A new version is available",
     staleSubtitle: "OpenClaw was updated in the background. Reload to get the latest panel.",
+    reloading: "Reloading…",
     retry: "Retry",
   },
   nodes: {
@@ -1907,6 +1908,8 @@ export const en: TranslationMap = {
     earlier: "Earlier",
     requestFailed: "OpenClaw could not reply. Try again.",
     connectionChanged: "The Gateway connection changed. Retry to continue this setup.",
+    sessionRestarted:
+      "{error} OpenClaw started a fresh session; earlier messages remain for context.",
     unsupportedGateway: "Update the Gateway to continue setup with OpenClaw.",
     history: {
       button: "History",
@@ -1943,9 +1946,13 @@ export const en: TranslationMap = {
     add: "Add server",
     adding: "Adding…",
     nameLabel: "Name",
+    transportLabel: "Transport",
+    transportStreamableHttp: "Streamable HTTP",
+    transportSse: "SSE",
+    transportStdio: "Stdio",
     targetLabel: "URL or command",
     nameInvalid: "Server names use letters, numbers, dots, dashes, or underscores.",
-    targetInvalid: "Enter an http(s) URL or a command line.",
+    targetInvalid: "Enter a URL for HTTP transports or a valid command line for stdio.",
     nameTaken: "An MCP server named “{name}” already exists.",
     missing: "MCP server “{name}” was not found in the configuration.",
     missingTransport: "missing transport",
@@ -2128,6 +2135,7 @@ export const en: TranslationMap = {
       title: "Swarm",
       description: "Let Code Mode orchestrate groups of subagents in parallel.",
       empty: "No active swarms.",
+      defaultPhase: "Unphased",
     },
   },
   aboutPage: {
@@ -2606,12 +2614,25 @@ export const en: TranslationMap = {
       remove: "Remove",
       needsApproval: "Needs approval",
       needsApprovalDetail: "This widget requested additional access.",
+      networkAccess: "Network origins",
+      hostTools: "Host tools and data",
+      activeCapabilities: "Active widget capabilities",
+      networkCapability: "Network: {capability}",
+      toolCapability: "Tool: {capability}",
+      granted: "Granted",
       allow: "Allow",
       reject: "Reject",
       rejected: "Access rejected",
       rejectedDetail: "This widget stays inactive until it is removed or replaced.",
+      appLoading: "Restoring app…",
+      appStaleTitle: "This pinned app is stale",
+      appStaleDetail: "Its server, resource, or originating transcript is no longer available.",
+      retry: "Retry",
       frameResolverMissing: "Widget content is unavailable.",
+      sandboxUnavailable: "Widget sandbox host is unavailable.",
       frameAuthorizationFailed: "Widget authorization failed after repeated refresh attempts.",
+      sandboxOriginRequired:
+        "Widget authorization failed after repeated refresh attempts. If the gateway runs behind a reverse proxy or tunnel that does not route the widget sandbox port, set mcp.apps.sandboxOrigin to a dedicated public origin routed to the sandbox listener.",
       errorTitle: "This widget could not load",
       errorDetail: "The problem is contained to this card.",
       actionErrorTitle: "Widget change failed",
@@ -3584,6 +3605,7 @@ export const en: TranslationMap = {
         title: "Protocol mismatch",
         summary:
           "The served Control UI and the running Gateway do not agree on the supported connection protocol.",
+        refresh: "Refresh page",
         stepDashboard:
           "Reopen the served dashboard with openclaw dashboard so the UI and Gateway come from the same install.",
         stepDevUi:
@@ -3605,6 +3627,7 @@ export const en: TranslationMap = {
   },
   chat: {
     disconnected: "Disconnected from gateway.",
+    waitingForApproval: "Waiting for approval…",
     archivedSessionDisabled: "Restore this thread to send messages.",
     loadOlder: "Load older",
     sessionHeader: {
@@ -4144,8 +4167,8 @@ export const en: TranslationMap = {
       show: "Show discussion",
       disconnected: "Gateway is disconnected.",
       loading: "Loading discussion…",
-      open: "Open discussion",
       opening: "Opening discussion…",
+      requiresWriteAccess: "Operator write access is required to open this discussion.",
       opened: "Session discussion",
       openExternal: "Open discussion in a new tab",
       frameTitle: "Session discussion",

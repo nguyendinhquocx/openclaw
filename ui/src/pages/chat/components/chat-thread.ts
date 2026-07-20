@@ -112,10 +112,13 @@ type ChatThreadProps = {
   queue: ChatQueueItem[];
   showThinking: boolean;
   showToolCalls: boolean;
+  persistCommentary?: boolean;
   /** True while the session has an abortable live run (marks running tool rows). */
   runActive?: boolean;
   /** True while the agent is visibly working (isChatRunWorking); shows the working spark. */
   runWorking?: boolean;
+  /** Re-labels the working spark while the active run is parked on an approval. */
+  waitingApproval?: boolean;
   planStatus?: PlanStatus | null;
   questionPrompts?: readonly QuestionPrompt[];
   sessions: SessionsListResult | null;
@@ -128,6 +131,8 @@ type ChatThreadProps = {
   assistantAvatarUrl?: string | null;
   userName?: string | null;
   userAvatar?: string | null;
+  /** Gateway resolves authenticated user identities (multi-user attribution). */
+  attributedIdentity?: boolean;
   basePath?: string;
   fullMessageAgentId?: string;
   localMediaPreviewRoots?: string[];
@@ -791,6 +796,9 @@ function handleChatThreadSelectionPointerUp(event: PointerEvent, props: ChatThre
 }
 
 function handleChatContextMenu(event: MouseEvent, props: ChatThreadProps) {
+  if (event.composedPath().some((target) => target instanceof HTMLAnchorElement)) {
+    return;
+  }
   const bubble = (event.target as HTMLElement).closest(".chat-bubble");
   if (!bubble) {
     return;
@@ -1086,7 +1094,9 @@ function renderChatThreadContents(
     streamStartedAt: props.streamStartedAt,
     queue: props.queue,
     showToolCalls: props.showToolCalls,
+    persistCommentary: props.persistCommentary,
     runWorking: Boolean(props.runWorking),
+    waitingApproval: Boolean(props.waitingApproval),
     runActive: Boolean(props.runActive),
     planStatus: props.planStatus,
     questionPrompts: props.questionPrompts,
@@ -1120,9 +1130,12 @@ function renderChatThreadContents(
         : classifySessionKind(props.sessionKey);
   // Only agent-solo kinds qualify: "global" aggregates every inbound context
   // under session.scope="global" (including group/channel senders), so it
-  // keeps avatars like "group" and "unknown" do.
+  // keeps avatars like "group" and "unknown" do. An identity-resolving gateway
+  // (multi-user trusted proxy) also keeps them: several people share these
+  // sessions, so the author marker is signal, not decoration.
   const isDirectThread =
-    sessionKind === "direct" || sessionKind === "cron" || sessionKind === "spawn-child";
+    (sessionKind === "direct" || sessionKind === "cron" || sessionKind === "spawn-child") &&
+    !props.attributedIdentity;
   const showLoadingSkeleton = props.loading && chatItems.length === 0;
   const threadContextWindow =
     activeSession?.contextTokens ?? props.sessions?.defaults?.contextTokens ?? null;
@@ -1191,6 +1204,7 @@ function renderChatThreadContents(
         questionPrompts,
         planStatus: props.planStatus,
         planActive: Boolean(props.runActive),
+        waitingApproval: props.waitingApproval,
         onOpenSidebar: props.onOpenSidebar,
         assistant: assistantIdentity,
         basePath: props.basePath,
@@ -1221,6 +1235,7 @@ function renderChatThreadContents(
     return nothing;
   });
   const collapsedItems = collapseCompletedTurnWork(coalesceStreamRuns(chatItems), {
+    sessionKey: props.sessionKey,
     runWorking: Boolean(props.runWorking),
     searchActive: state.searchOpen && Boolean(state.searchQuery.trim()),
   });
@@ -1267,6 +1282,7 @@ function renderChatThreadContents(
     props.showToolCalls,
     Boolean(props.runActive),
     Boolean(props.runWorking),
+    Boolean(props.waitingApproval),
     props.planStatus,
     props.questionPrompts,
     Boolean(props.autoExpandToolCalls),
