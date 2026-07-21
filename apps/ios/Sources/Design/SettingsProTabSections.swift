@@ -1006,8 +1006,19 @@ extension SettingsProTab {
                    let accessLevelText = self.locationSettingsPresentation.accessLevelText
                 {
                     Divider()
-                    Button {
-                        self.showLocationAccessDialog = true
+                    Menu {
+                        Button {
+                            self.selectLocationAccessLevel(.whileUsing)
+                        } label: {
+                            Text("While Using the App")
+                                .font(OpenClawType.subheadSemiBold)
+                        }
+                        Button {
+                            self.selectLocationAccessLevel(.always)
+                        } label: {
+                            Text("Always")
+                                .font(OpenClawType.subheadSemiBold)
+                        }
                     } label: {
                         HStack(alignment: .firstTextBaseline) {
                             Text("Access Level")
@@ -1056,7 +1067,10 @@ extension SettingsProTab {
                 Text("Default").font(OpenClawType.body).tag("")
                 let defaultId = (self.appModel.gatewayDefaultAgentId ?? "")
                     .trimmingCharacters(in: .whitespacesAndNewlines)
-                ForEach(self.appModel.gatewayAgents.filter { $0.id != defaultId }, id: \.id) { agent in
+                ForEach(
+                    self.appModel.gatewayAgents.filter(\.isSelectableAgent).filter { $0.id != defaultId },
+                    id: \.id)
+                { agent in
                     let name = (agent.name ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
                     Text(name.isEmpty ? agent.id : name).font(OpenClawType.body).tag(agent.id)
                 }
