@@ -38,6 +38,7 @@ import {
   resolveClaudeOpus5ModelIdentity,
   resolveClaudeSonnet5ModelIdentity,
   resolveClaudeThinkingProfile,
+  supportsClaude1MContext,
   supportsClaudeAdaptiveThinking,
   supportsClaudeNativeMaxEffort,
   supportsClaudeNativeXhighEffort,
@@ -57,6 +58,7 @@ import {
   applyAnthropicConfigDefaults,
   normalizeAnthropicProviderConfigForProvider,
 } from "./config-defaults.js";
+import { acceptsAnthropicLiveModelContract } from "./live-model-contract-gate.js";
 import { anthropicMediaUnderstandingProvider } from "./media-understanding-provider.js";
 import manifest from "./openclaw.plugin.json" with { type: "json" };
 import { resolveClaudeCliSyntheticAuth } from "./provider-discovery.js";
@@ -83,13 +85,19 @@ function classifyAnthropicFailoverDescriptor(value: string | undefined) {
   }
 }
 type UpsertAuthProfileParams = Parameters<typeof upsertAuthProfileWithLock>[0];
-const DEFAULT_ANTHROPIC_MODEL = "anthropic/claude-opus-4-8";
+const DEFAULT_ANTHROPIC_MODEL = "anthropic/claude-opus-5";
 const ANTHROPIC_OPUS_48_MODEL_ID = "claude-opus-4-8";
 const ANTHROPIC_OPUS_48_DOT_MODEL_ID = "claude-opus-4.8";
 const ANTHROPIC_OPUS_47_MODEL_ID = "claude-opus-4-7";
 const ANTHROPIC_OPUS_47_DOT_MODEL_ID = "claude-opus-4.7";
 const ANTHROPIC_1M_CONTEXT_TOKENS = 1_000_000;
 const ANTHROPIC_MODERN_MAX_OUTPUT_TOKENS = 128_000;
+const ANTHROPIC_OPUS_5_COST = {
+  input: 5,
+  output: 25,
+  cacheRead: 0.5,
+  cacheWrite: 6.25,
+};
 // Anthropic's introductory rate expires at the documented UTC month boundary.
 const ANTHROPIC_SONNET_5_STANDARD_PRICING_START_MS = Date.UTC(2026, 8, 1);
 const ANTHROPIC_SONNET_5_PROMOTIONAL_COST = {
@@ -359,9 +367,11 @@ function buildAnthropicForwardCompatModel(
     input: ["text", "image"],
     cost: isAnthropicMandatoryClaude5Model(trimmedModelId)
       ? { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 }
-      : isAnthropicSonnet5Model(trimmedModelId) && provider === PROVIDER_ID
-        ? resolveAnthropicSonnet5Cost()
-        : { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      : isAnthropicOpus5Model(trimmedModelId) && provider === PROVIDER_ID
+        ? ANTHROPIC_OPUS_5_COST
+        : isAnthropicSonnet5Model(trimmedModelId) && provider === PROVIDER_ID
+          ? resolveAnthropicSonnet5Cost()
+          : { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow: resolveAnthropicFixedContextWindow(provider, trimmedModelId) ?? 200_000,
     maxTokens: isAnthropic128kOutputModel(trimmedModelId)
       ? ANTHROPIC_MODERN_MAX_OUTPUT_TOKENS
@@ -423,7 +433,7 @@ function resolveAnthropicForwardCompatModel(
 }
 
 function isAnthropicGa1MModel(modelId: string): boolean {
-  return supportsClaudeAdaptiveThinking({ id: modelId });
+  return supportsClaude1MContext({ id: modelId });
 }
 
 function isAnthropicFable5Model(modelId: string): boolean {
@@ -648,6 +658,19 @@ function applyAnthropicImageInputCapability(params: {
   };
 }
 
+function applyAnthropicOpus5Cost(params: {
+  modelId: string;
+  model: ProviderRuntimeModel;
+}): ProviderRuntimeModel | undefined {
+  if (!isAnthropicOpus5Model(params.modelId)) {
+    return undefined;
+  }
+  if (modelCostsEqual(params.model.cost, ANTHROPIC_OPUS_5_COST)) {
+    return undefined;
+  }
+  return { ...params.model, cost: ANTHROPIC_OPUS_5_COST };
+}
+
 function applyAnthropicSonnet5Cost(params: {
   modelId: string;
   model: ProviderRuntimeModel;
@@ -718,10 +741,15 @@ function normalizeAnthropicResolvedModel(
     }) ?? thinkingLevelModel;
   const pricingModel =
     normalizeLowercaseStringOrEmpty(ctx.provider) === PROVIDER_ID
-      ? (applyAnthropicSonnet5Cost({
+      ? (applyAnthropicOpus5Cost({
           modelId: contractModelId,
           model: contextWindowModel,
-        }) ?? contextWindowModel)
+        }) ??
+        applyAnthropicSonnet5Cost({
+          modelId: contractModelId,
+          model: contextWindowModel,
+        }) ??
+        contextWindowModel)
       : contextWindowModel;
   return pricingModel === ctx.model ? undefined : pricingModel;
 }
@@ -923,6 +951,7 @@ export function buildAnthropicProvider(): ProviderPlugin {
                 ...(key ? { "x-api-key": key } : {}),
               };
             },
+            acceptUnknownModel: acceptsAnthropicLiveModelContract,
           },
         }),
     },
