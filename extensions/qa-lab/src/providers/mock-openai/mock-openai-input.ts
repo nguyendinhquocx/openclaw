@@ -24,6 +24,21 @@ export function extractLastUserText(input: ResponsesInputItem[]) {
   return "";
 }
 
+export function extractLastMatchingUserTurn(input: ResponsesInputItem[], pattern: RegExp) {
+  const matcher = new RegExp(pattern.source, pattern.flags.replace(/[gy]/g, ""));
+  for (let index = input.length - 1; index >= 0; index -= 1) {
+    const item = input[index];
+    if (item?.role !== "user" || !Array.isArray(item.content)) {
+      continue;
+    }
+    const text = extractInputText(item.content);
+    if (text && !isInternalRuntimeContextCarrierText(text) && matcher.test(text)) {
+      return { index, text };
+    }
+  }
+  return null;
+}
+
 function findLastUserIndex(input: ResponsesInputItem[]) {
   return input.findLastIndex(
     (item) =>
@@ -274,27 +289,6 @@ export function extractAllUserTexts(input: ResponsesInputItem[]) {
     }
   }
   return texts;
-}
-
-export function extractSystemInputText(input: ResponsesInputItem[]) {
-  const texts: string[] = [];
-  for (const item of input) {
-    if (item.role !== "system") {
-      continue;
-    }
-    if (typeof item.content === "string" && item.content.trim()) {
-      texts.push(item.content.trim());
-      continue;
-    }
-    if (!Array.isArray(item.content)) {
-      continue;
-    }
-    const text = extractInputText(item.content);
-    if (text) {
-      texts.push(text);
-    }
-  }
-  return texts.join("\n");
 }
 
 export function extractAllInputTexts(input: ResponsesInputItem[]) {
