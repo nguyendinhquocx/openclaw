@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
+import type { FileHandle } from "node:fs/promises";
 import type { ServerResponse } from "node:http";
+import { matchesHttpIfNoneMatch } from "./http-conditional.js";
 
 type FileIdentity = {
   size: number;
@@ -32,6 +34,11 @@ type ByteResponsePlan =
       contentLength: 0;
       etag: string;
       size: number;
+    }
+  | {
+      kind: "not-modified";
+      statusCode: 304;
+      etag: string;
     };
 
 function createByteEtag(file: FileIdentity): string {
@@ -80,8 +87,16 @@ export function resolveByteResponse(params: {
   method?: string;
   rangeHeader?: string | string[];
   ifRangeHeader?: string | string[];
+  ifNoneMatchHeader?: string | string[];
 }): ByteResponsePlan {
   const etag = createByteEtag(params.file);
+  if (
+    (params.method === "GET" || params.method === "HEAD") &&
+    matchesHttpIfNoneMatch(params.ifNoneMatchHeader, etag)
+  ) {
+    // RFC 9110 evaluates representation validators before Range or If-Range.
+    return { kind: "not-modified", statusCode: 304, etag };
+  }
   const full = {
     kind: "full",
     statusCode: 200,
@@ -122,10 +137,70 @@ export function writeByteHeaders(res: ServerResponse, plan: ByteResponsePlan): v
   res.statusCode = plan.statusCode;
   res.setHeader("Accept-Ranges", "bytes");
   res.setHeader("ETag", plan.etag);
+  if (plan.kind === "not-modified") {
+    return;
+  }
   res.setHeader("Content-Length", String(plan.contentLength));
   if (plan.kind === "partial") {
     res.setHeader("Content-Range", `bytes ${plan.range.start}-${plan.range.end}/${plan.size}`);
   } else if (plan.kind === "unsatisfiable") {
     res.setHeader("Content-Range", `bytes */${plan.size}`);
   }
+}
+
+export function createGatewayByteStream(
+  res: ServerResponse,
+  handle: Pick<FileHandle, "close" | "createReadStream">,
+  onReadError: () => void,
+) {
+  let stream: ReturnType<FileHandle["createReadStream"]> | undefined;
+  let closed = false;
+  const close = async () => {
+    if (closed) {
+      return;
+    }
+    closed = true;
+    if (stream) {
+      stream.destroy();
+      return;
+    }
+    await handle.close().catch(() => {});
+  };
+  const release = () => {
+    void close();
+  };
+  // The ReadStream owns the FileHandle after creation; destroying it closes the descriptor once.
+  res.once("close", release);
+
+  return {
+    close,
+    async pipe(plan: ByteResponsePlan, method: string | undefined) {
+      if (method === "HEAD" || !("contentLength" in plan) || plan.contentLength === 0) {
+        await close();
+        res.end();
+        return;
+      }
+      if (closed || res.destroyed || res.writableEnded) {
+        await close();
+        return;
+      }
+      stream = handle.createReadStream({
+        start: plan.kind === "partial" ? plan.range.start : 0,
+        end: plan.kind === "partial" ? plan.range.end : plan.contentLength - 1,
+        autoClose: true,
+      });
+      stream.once("end", release).once("close", release);
+      stream.once("error", () => {
+        release();
+        if (!res.destroyed && !res.writableEnded) {
+          if (res.headersSent) {
+            res.destroy();
+          } else {
+            onReadError();
+          }
+        }
+      });
+      stream.pipe(res);
+    },
+  };
 }
