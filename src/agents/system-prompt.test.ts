@@ -825,7 +825,9 @@ describe("buildAgentSystemPrompt", () => {
     });
 
     expect(prompt).toContain("## Model Aliases");
-    expect(prompt).toContain("Model override: prefer alias");
+    expect(prompt).toContain(
+      "Model override: aliases are shortcuts for unqualified model requests. Use explicit provider/model references verbatim; do not substitute an alias or another provider.",
+    );
     expect(prompt).toContain("- Opus: anthropic/claude-opus-4-5");
   });
 
@@ -853,9 +855,11 @@ describe("buildAgentSystemPrompt", () => {
     });
 
     expect(prompt).toContain(
-      "Config, channels, plugins, new agents, model/provider, updates: ask `openclaw`.",
+      "Gateway restart, config, channels, plugins, agents, models/providers, updates: ask `openclaw`.",
     );
-    expect(prompt).toContain("Never write own config; OpenClaw is system expert.");
+    expect(prompt).toContain(
+      "Never restart the Gateway through shell commands or write your own config.",
+    );
     expect(prompt).toContain("`visible:true` only web/app user or asked.");
   });
 
@@ -866,6 +870,7 @@ describe("buildAgentSystemPrompt", () => {
     });
 
     expect(prompt).not.toContain("ask `openclaw`");
+    expect(prompt).not.toContain("Gateway restart, config");
   });
 
   it("includes skills guidance when skills prompt is present", () => {
