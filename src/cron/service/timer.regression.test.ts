@@ -2819,6 +2819,74 @@ describe("cron service timer regressions", () => {
     },
   );
 
+  it.each(["timer maintenance", "startup catch-up"] as const)(
+    "persists schedule auto-disable before notifying during %s",
+    async (path) => {
+      const store = timerRegressionFixtures.makeStorePath();
+      const now = Date.parse("2026-08-01T11:00:00.000Z");
+      const malformed = createIsolatedRegressionJob({
+        id: `malformed-${path}`,
+        name: `malformed ${path}`,
+        scheduledAt: now,
+        schedule: { kind: "cron", expr: "0 1 * * *" },
+        payload: { kind: "agentTurn", message: "malformed" },
+        state: { scheduleErrorCount: 2 },
+      });
+      const jobs =
+        path === "startup catch-up"
+          ? [
+              createDueIsolatedJob({ id: "due-startup-catch-up", nowMs: now, nextRunAtMs: now }),
+              malformed,
+            ]
+          : [malformed];
+      await saveCronStore(store.storePath, { version: 1, jobs });
+
+      const order: string[] = [];
+      const enqueueSystemEvent = vi.fn(() => {
+        expect(order.at(-1)).toBe("persist");
+        order.push("notify");
+      });
+      const requestHeartbeat = vi.fn(() => {
+        expect(order.at(-1)).toBe("notify");
+        order.push("heartbeat");
+      });
+      const state = createCronServiceState({
+        cronEnabled: true,
+        storePath: store.storePath,
+        log: noopLogger,
+        nowMs: () => now,
+        enqueueSystemEvent,
+        requestHeartbeat,
+        runIsolatedAgentJob: createDefaultIsolatedRunner(),
+      });
+      const computeNextRunAtMs = schedule.computeNextRunAtMs;
+      vi.spyOn(schedule, "computeNextRunAtMs").mockImplementation((cronSchedule, nowMs) => {
+        if (cronSchedule.kind === "cron" && cronSchedule.expr === "0 1 * * *") {
+          throw new Error("simulated schedule failure");
+        }
+        return computeNextRunAtMs(cronSchedule, nowMs);
+      });
+      const saveCronJobsStore = cronStoreModule.saveCronJobsStore;
+      vi.spyOn(cronStoreModule, "saveCronJobsStore").mockImplementation(async (...args) => {
+        await saveCronJobsStore(...args);
+        order.push("persist");
+      });
+
+      if (path === "startup catch-up") {
+        await runMissedJobs(state);
+      } else {
+        await onTimer(state);
+      }
+
+      const notifyAt = order.indexOf("notify");
+      expect(order.slice(notifyAt - 1, notifyAt + 2)).toEqual(["persist", "notify", "heartbeat"]);
+      expect(state.store?.jobs.find((job) => job.id === malformed.id)?.enabled).toBe(false);
+      expect(
+        (await loadCronStore(store.storePath)).jobs.find((job) => job.id === malformed.id),
+      ).toMatchObject({ enabled: false });
+    },
+  );
+
   it("auto-disables a recurring job on its tenth consecutive run failure", () => {
     const startedAt = Date.parse("2026-08-01T12:00:00.000Z");
     const deferredNotifications: Array<() => void> = [];
@@ -3168,6 +3236,37 @@ describe("cron service timer regressions", () => {
       status: "error",
       error: "cron script payload failed (timeout): wall-clock timeout exceeded",
       errorClassification: { kind: "reason", reason: "timeout" },
+      executionStarted: true,
+      startedAt,
+      endedAt,
+    });
+
+    expect(job.state.lastErrorReason).toBe("timeout");
+    expect(job.state.nextRunAtMs).toBe(endedAt + 30_000);
+    expect(job.enabled).toBe(true);
+  });
+
+  it("classifies interrupted agent transport before applying bounded retry", () => {
+    const startedAt = Date.parse("2026-07-21T12:00:00.000Z");
+    const endedAt = startedAt + 500;
+    const job = createIsolatedRegressionJob({
+      id: "transient-agent-transport",
+      name: "transient-agent-transport",
+      scheduledAt: startedAt,
+      schedule: { kind: "at", at: new Date(startedAt).toISOString() },
+      payload: { kind: "agentTurn", message: "ping" },
+      state: { runningAtMs: startedAt },
+    });
+    const state = createRunningCronServiceState({
+      storePath: "/tmp/cron-transient-agent-transport.json",
+      log: noopLogger,
+      nowMs: () => endedAt,
+      jobs: [job],
+    });
+
+    applyJobResult(state, job, {
+      status: "error",
+      error: "stream disconnected before completion: upstream reset",
       executionStarted: true,
       startedAt,
       endedAt,
