@@ -1,9 +1,14 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { resolveBootstrapWarningSignaturesSeen } from "../../agents/bootstrap-budget.js";
 import type { BootstrapContextRunKind } from "../../agents/bootstrap-mode.js";
+import { runEmbeddedAgentInternal } from "../../agents/embedded-agent-runner/run-orchestrator.js";
+import type {
+  AgentExecutionAttributionInfo,
+  RunEmbeddedAgentInternalParams,
+} from "../../agents/embedded-agent-runner/run/internal-params.js";
 import type { RunEmbeddedAgentParams } from "../../agents/embedded-agent-runner/run/params.js";
-import { runEmbeddedAgent } from "../../agents/embedded-agent.js";
 import type { FastModeAutoProgressState } from "../../agents/fast-mode.js";
+import type { ContextEngineLogicalTurnLease } from "../../agents/harness/context-engine-logical-turn.js";
 import { resolveAgentHarnessPolicy } from "../../agents/harness/policy.js";
 import { resolveOpenAIRuntimeProvider } from "../../agents/openai-routing.js";
 import {
@@ -71,6 +76,8 @@ export async function runEmbeddedFallbackCandidate(params: {
   suppressAssistantErrorPersistenceForCandidate: boolean;
   onAssistantErrorMessagePersisted: () => void;
   userTurnTranscriptRecorder: NonNullable<AgentTurnParams["opts"]>["userTurnTranscriptRecorder"];
+  contextEngineLogicalTurnLease: ContextEngineLogicalTurnLease;
+  onContextEngineTurnCandidate: RunEmbeddedAgentParams["onContextEngineTurnCandidate"];
   notifyUserMessagePersisted: () => void;
   fastModeStartedAtMs: number;
   fastModeAutoProgressState: FastModeAutoProgressState;
@@ -80,7 +87,7 @@ export async function runEmbeddedFallbackCandidate(params: {
     ReturnType<typeof import("./current-turn-images.js").resolveCurrentTurnImages>
   >;
   signalExecutionPhaseForTyping: NonNullable<
-    Parameters<typeof runEmbeddedAgent>[0]["onExecutionPhase"]
+    Parameters<typeof runEmbeddedAgentInternal>[0]["onExecutionPhase"]
   >;
   notifyAgentRunStart: () => void;
   notifyUserAboutCompaction: boolean;
@@ -92,7 +99,7 @@ export async function runEmbeddedFallbackCandidate(params: {
   onLifecycleBackstop: (backstop: AgentLifecycleTerminalBackstop) => void;
   onCompactionCount: (count: number) => void;
 }): Promise<{
-  result: Awaited<ReturnType<typeof runEmbeddedAgent>>;
+  result: Awaited<ReturnType<typeof runEmbeddedAgentInternal>>;
   bootstrapPromptWarningSignaturesSeen: string[];
 }> {
   const turn = params.turn;
@@ -190,10 +197,11 @@ export async function runEmbeddedFallbackCandidate(params: {
       sessionKey: turn.sessionKey,
       milestone: "before_embedded_run",
     });
-    const result = await params.timing.measure("embedded_run", () =>
-      runEmbeddedAgent({
+    const result = await params.timing.measure("embedded_run", () => {
+      const embeddedRunParams: RunEmbeddedAgentInternalParams = {
         ...embeddedContext,
         messageActionTurnCapability,
+        attribution: turn.attribution,
         lifecycleGeneration: params.getLifecycleGeneration(),
         allowGatewaySubagentBinding: true,
         trigger: turn.isHeartbeat ? "heartbeat" : "user",
@@ -215,6 +223,8 @@ export async function runEmbeddedFallbackCandidate(params: {
         transcriptPrompt: turn.transcriptCommandBody,
         media: turn.followupRun.media,
         userTurnTranscriptRecorder: params.userTurnTranscriptRecorder,
+        contextEngineLogicalTurnLease: params.contextEngineLogicalTurnLease,
+        onContextEngineTurnCandidate: params.onContextEngineTurnCandidate,
         currentInboundEventKind: turn.followupRun.currentInboundEventKind,
         currentInboundContext: turn.followupRun.currentInboundContext,
         extraSystemPrompt: turn.followupRun.run.extraSystemPrompt,
@@ -250,6 +260,11 @@ export async function runEmbeddedFallbackCandidate(params: {
             params.onLifecycleGeneration(info.lifecycleGeneration);
           }
         },
+        onExecutionAttributionChanged: (info: AgentExecutionAttributionInfo) => {
+          if (info?.attribution) {
+            turn.attribution = info.attribution;
+          }
+        },
         onExecutionPhase: params.signalExecutionPhaseForTyping,
         onLaneWait: ({ waiting }) => {
           const replyOperation = turn.replyOperation;
@@ -263,7 +278,7 @@ export async function runEmbeddedFallbackCandidate(params: {
         onPartialReply: async (payload) => {
           const classified = params.presentation.classifyStreamingPartial(payload);
           if (classified.skip || !classified.text) {
-            return;
+            return false;
           }
           const textForTyping = classified.text;
           let didMaterialize = false;
@@ -279,17 +294,21 @@ export async function runEmbeddedFallbackCandidate(params: {
             },
             mediaUrls: payload.mediaUrls,
           };
+          const onPartialReply = turn.opts?.onPartialReply;
           if (!params.preserveProgressCallbackStartOrder) {
             await turn.typingSignals.signalTextDelta(textForTyping);
-            if (!turn.opts?.onPartialReply) {
-              return;
+            if (!onPartialReply) {
+              return false;
             }
-            await turn.opts.onPartialReply(partialPayload);
-            return;
+            return await onPartialReply(partialPayload);
           }
-          await params.presentation.startPresentationWhileTyping(
+          if (!onPartialReply) {
+            await turn.typingSignals.signalTextDelta(textForTyping);
+            return false;
+          }
+          return await params.presentation.startPresentationWhileTyping(
             turn.typingSignals.signalTextDelta(textForTyping),
-            () => turn.opts?.onPartialReply?.(partialPayload),
+            () => onPartialReply(partialPayload),
           );
         },
         onAssistantMessageStart: async () => {
@@ -300,7 +319,9 @@ export async function runEmbeddedFallbackCandidate(params: {
           }
           await params.presentation.startPresentationWhileTyping(
             turn.typingSignals.signalMessageStart(),
-            () => turn.opts?.onAssistantMessageStart?.(),
+            async () => {
+              await turn.opts?.onAssistantMessageStart?.();
+            },
           );
         },
         onReasoningStream:
@@ -321,18 +342,23 @@ export async function runEmbeddedFallbackCandidate(params: {
                 }
                 await params.presentation.startPresentationWhileTyping(
                   turn.typingSignals.signalReasoningDelta(),
-                  () =>
-                    turn.opts?.onReasoningStream?.({
+                  async () => {
+                    await turn.opts?.onReasoningStream?.({
                       text: payload.text,
                       mediaUrls: payload.mediaUrls,
                       isReasoningSnapshot: payload.isReasoningSnapshot,
                       requiresReasoningProgressOptIn: payload.requiresReasoningProgressOptIn,
-                    }),
+                    });
+                  },
                 );
               }
             : undefined,
         streamReasoningInNonStreamModes: turn.opts?.streamReasoningInNonStreamModes,
-        onReasoningEnd: turn.opts?.onReasoningEnd,
+        onReasoningEnd: turn.opts?.onReasoningEnd
+          ? async () => {
+              await turn.opts?.onReasoningEnd?.();
+            }
+          : undefined,
         onAgentEvent: createAgentRunEventHandler({
           turn,
           lifecycleBackstop,
@@ -391,8 +417,9 @@ export async function runEmbeddedFallbackCandidate(params: {
               };
             })()
           : undefined,
-      }),
-    );
+      };
+      return runEmbeddedAgentInternal(embeddedRunParams);
+    });
     const resultCompactionCount = Math.max(0, result.meta?.agentMeta?.compactionCount ?? 0);
     attemptCompactionCount = Math.max(attemptCompactionCount, resultCompactionCount);
     return {

@@ -4247,9 +4247,8 @@ export const en: TranslationMap = {
         summary:
           "This page is running over plain HTTP, so the browser cannot create the device identity the Gateway expects.",
         stepHttps: "Use HTTPS/Tailscale Serve, or open http://127.0.0.1:18789 on the Gateway host.",
-        stepLocalCompat:
-          "For local token-only compatibility, set gateway.controlUi.allowInsecureAuth: true.",
-        stepAvoidDisable: "Avoid disabling device auth for remote HTTP access.",
+        stepAvoidDisable:
+          "Do not use a remote plain-HTTP URL; a token or password cannot replace browser device identity.",
       },
       origin: {
         title: "Browser origin not allowed",
@@ -4286,6 +4285,8 @@ export const en: TranslationMap = {
   chat: {
     sendErrors: {
       activeLeafChanged: "The thread switched branches — review and resend.",
+      steerRunNoLongerActive:
+        "This steer still targets the previous run, but that run is no longer active.",
     },
     waitingForApproval: "Waiting for approval…",
     startupStatus: {
@@ -4712,7 +4713,7 @@ export const en: TranslationMap = {
         waitingForRun: "Waiting for current run",
         runningCommand: "Running command",
         waitingForReconnect: "Waiting for reconnect",
-        needsReview: "Needs review",
+        needsReview: "Delivery uncertain",
       },
       imageCount: "Image ({count})",
     },
