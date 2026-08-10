@@ -1890,20 +1890,6 @@ describe("Codex app-server turn params", () => {
       "If `heartbeat_respond` is not already available and `tool_search` is available",
     );
 
-    params.bootstrapContextRunKind = "commitment-only";
-    const commitmentCollaborationMode = buildTurnCollaborationMode(params, {
-      turnScopedDeveloperInstructions: "Turn-only workspace instructions.",
-    });
-    expect(commitmentCollaborationMode.settings.developer_instructions).toContain(
-      "# Collaboration Mode: Default",
-    );
-    expect(commitmentCollaborationMode.settings.developer_instructions).toContain(
-      "Turn-only workspace instructions.",
-    );
-    expect(commitmentCollaborationMode.settings.developer_instructions).not.toContain(
-      "This is an OpenClaw heartbeat turn",
-    );
-
     params.trigger = "user";
     expect(
       buildTurnCollaborationMode(params, {
@@ -4511,6 +4497,7 @@ describe("Codex app-server thread lifecycle timing", () => {
 describe("resolveReasoningEffort (#71946)", () => {
   describe("modern Codex models (none/low/medium/high/xhigh enum)", () => {
     it.each([
+      "gpt-5.6",
       "gpt-5.6-sol",
       "gpt-5.6-terra",
       "gpt-5.6-luna",
@@ -4526,6 +4513,7 @@ describe("resolveReasoningEffort (#71946)", () => {
     );
 
     it.each([
+      "gpt-5.6",
       "gpt-5.6-sol",
       "gpt-5.6-terra",
       "gpt-5.6-luna",
