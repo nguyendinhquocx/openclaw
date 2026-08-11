@@ -34,7 +34,7 @@ import {
 } from "../auto-reply/reply/session-fork.js";
 import type { SessionEntry } from "../config/sessions.js";
 import { resolveAgentMainSessionKey } from "../config/sessions/main-session.js";
-import { resolveStorePath } from "../config/sessions/paths.js";
+import { resolveSessionStorePathCore } from "../config/sessions/paths.js";
 import {
   createSessionEntryWithTranscript,
   listSessionEntriesReadOnly,
@@ -287,6 +287,8 @@ export async function createGatewaySession(params: {
   /** Exact plugin namespace authorized by the scoped plugin runtime. */
   authorizedPluginId?: string;
   afterCreate?: (created: CreatedGatewaySession) => Promise<void>;
+  /** Synchronous caller-authority guard checked by each durable owner boundary. */
+  commitGuard?: () => void;
 }): Promise<CreateGatewaySessionResult> {
   const requestedKey = normalizeOptionalString(params.key);
   const parentSessionKey = normalizeOptionalString(params.parentSessionKey);
@@ -374,7 +376,7 @@ export async function createGatewaySession(params: {
         error: errorShape(ErrorCodes.INVALID_REQUEST, "incognito sessions are web-only"),
       };
     }
-    const durableStorePath = resolveStorePath(params.cfg.session?.store, { agentId });
+    const durableStorePath = resolveSessionStorePathCore(params.cfg.session?.store, { agentId });
     const durableEntryExists = listSessionEntriesReadOnly({
       agentId,
       storePath: durableStorePath,
@@ -656,6 +658,7 @@ export async function createGatewaySession(params: {
         ...(execCwd ? { execCwd } : {}),
         ...(params.clearExecBinding ? { clearExecBinding: true } : {}),
         ...(params.clearSpawnedCwd && !spawnedCwd ? { clearSpawnedCwd: true } : {}),
+        ...(params.commitGuard ? { assertAuthorizedInstance: params.commitGuard } : {}),
       });
       if (!resetResult.ok) {
         return resetResult;
@@ -693,6 +696,7 @@ export async function createGatewaySession(params: {
         }
       : undefined;
   const createChildSession = async (): Promise<CreateGatewaySessionResult> => {
+    params.commitGuard?.();
     let currentParentSessionEntry = parentSessionEntry;
     if (
       canonicalParentSessionKey &&
@@ -1083,6 +1087,9 @@ export async function createGatewaySession(params: {
           ...initializedEntry,
           ...inheritedSelection,
           parentSessionKey: storedParentSessionKey,
+          ...(canonicalParentSessionKey && currentParentSessionEntry?.sessionId
+            ? { parentSessionId: currentParentSessionEntry.sessionId }
+            : {}),
         };
         if (params.fork !== true) {
           return { ...initialized, entry };
@@ -1139,12 +1146,15 @@ export async function createGatewaySession(params: {
           ),
         };
       },
-      params.initialEntry
-        ? {
-            activeSessionKey: target.canonicalKey,
-            requireWriteSuccess: true,
-          }
-        : undefined,
+      {
+        ...(params.initialEntry
+          ? {
+              activeSessionKey: target.canonicalKey,
+              requireWriteSuccess: true,
+            }
+          : {}),
+        ...(params.commitGuard ? { commitGuard: params.commitGuard } : {}),
+      },
     );
     if (!created.ok) {
       return {

@@ -1,6 +1,6 @@
 // Matches approval requests against channel account and session bindings.
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
-import { resolveStorePath } from "../config/sessions/paths.js";
+import { resolveSessionStorePathCore } from "../config/sessions/paths.js";
 import { loadSessionEntryReadOnly } from "../config/sessions/session-accessor.js";
 import type { SessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -12,6 +12,7 @@ import {
 } from "../utils/delivery-context.shared.js";
 import { normalizeMessageChannel } from "../utils/message-channel.js";
 import { matchesApprovalRequestFilters } from "./approval-request-filters.js";
+import type { ApprovalRequestChannelRouteClass } from "./approval-types.js";
 import type { ExecApprovalRequest } from "./exec-approvals.js";
 import type { PluginApprovalRequest } from "./plugin-approvals.js";
 
@@ -77,8 +78,6 @@ function hasApprovalForwardTarget(params: {
   );
 }
 
-export type ApprovalRequestChannelRouteClass = "bound-or-explicit" | "unbound";
-
 /** Classifies whether native delivery has named channel-account owners. */
 export function classifyApprovalRequestChannelRoute(params: {
   cfg: OpenClawConfig;
@@ -124,7 +123,7 @@ export function resolvePersistedApprovalRequestSessionEntry(params: {
   }
   const parsed = parseAgentSessionKey(sessionKey);
   const agentId = parsed?.agentId ?? params.request.request.agentId ?? "main";
-  const storePath = resolveStorePath(params.cfg.session?.store, { agentId });
+  const storePath = resolveSessionStorePathCore(params.cfg.session?.store, { agentId });
   const entry = loadSessionEntryReadOnly({
     storePath,
     sessionKey,
