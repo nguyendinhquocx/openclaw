@@ -132,7 +132,7 @@ export async function prepareGatewayServerBootstrap(input: {
 
   const minimalTestGateway =
     isVitestRuntimeEnv() && process.env.OPENCLAW_TEST_MINIMAL_GATEWAY === "1";
-  const ambientEnvTriggers = opts.ambientEnvTriggers ?? "allow";
+  const ambientEnvTriggers = opts.ambientEnvTriggers ?? "suppress";
 
   // Ensure all default port derivations (browser/canvas) see the actual runtime port.
   process.env.OPENCLAW_GATEWAY_PORT = String(port);
@@ -502,6 +502,7 @@ export async function prepareGatewayServerBootstrap(input: {
   const {
     gatewayPluginConfigAtStart,
     defaultWorkspaceDir,
+    pluginWorkspaceDir,
     startupPluginIds,
     pluginManifestRecords,
     pluginMetadataSnapshot,
@@ -527,7 +528,7 @@ export async function prepareGatewayServerBootstrap(input: {
     config: startupActivationSourceConfig,
     compatibleConfigs: [startupRuntimeConfig, cfgAtStart, gatewayPluginConfigAtStart],
     env: process.env,
-    workspaceDir: defaultWorkspaceDir,
+    workspaceDir: pluginWorkspaceDir,
   });
   if (pluginLookUpTable) {
     const metrics = pluginLookUpTable.metrics;
@@ -574,6 +575,7 @@ export async function prepareGatewayServerBootstrap(input: {
     pluginBootstrap,
     gatewayPluginConfigAtStart,
     defaultWorkspaceDir,
+    pluginWorkspaceDir,
     startupPluginIds,
     pluginManifestRecords,
     pluginMetadataSnapshot,

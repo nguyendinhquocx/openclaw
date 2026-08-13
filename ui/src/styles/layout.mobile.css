@@ -357,8 +357,8 @@ html.openclaw-native-macos body .shell--mobile-nav .topnav-shell__actions {
     left: auto;
     z-index: 100;
     width: min(420px, calc(100vw - var(--safe-area-left) - var(--safe-area-right) - 16px));
-    background: var(--card, #161b22);
-    border: 1px solid var(--border, #30363d);
+    background: var(--card);
+    border: 1px solid var(--border);
     border-radius: var(--radius-md);
     padding: 10px;
     box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
@@ -769,8 +769,8 @@ html.openclaw-native-macos body .shell--mobile-nav .topnav-shell__actions {
   }
 }
 
-/* ≤500px: also hide Kind (col 3) and Updated (col 5); keep live status visible */
-@media (max-width: 500px) {
+/* ≤560px: also hide Kind (col 3) and Updated (col 5); keep live status visible */
+@media (max-width: 560px) {
   .data-table.sessions-table {
     min-width: 320px;
   }

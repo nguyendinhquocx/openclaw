@@ -748,6 +748,67 @@ function renderChatInto(container: HTMLElement, overrides: Partial<ChatProps> = 
   render(renderChat(createChatProps(overrides)), container);
 }
 
+describe("chat typing status", () => {
+  it.each([
+    {
+      actors: [{ id: "ayaan", label: "Ayaan" }],
+      expectedText: "Ayaan is typing…",
+      expectedAvatars: 1,
+    },
+    {
+      actors: [
+        { id: "ayaan", label: "Ayaan" },
+        { id: "liam", label: "Liam" },
+        { id: "maya", label: "Maya" },
+        { id: "zoe", label: "Zoe" },
+      ],
+      expectedText: "Ayaan, Liam, Maya, Zoe are typing…",
+      expectedAvatars: 3,
+    },
+  ])("renders $expectedText above the composer", ({ actors, expectedText, expectedAvatars }) => {
+    const container = renderChatView({ typingActors: actors });
+    const indicator = container.querySelector(".agent-chat__typing-indicator--outside");
+
+    expect(indicator?.nextElementSibling?.classList.contains("agent-chat__composer-shell")).toBe(
+      true,
+    );
+    expect(indicator?.closest(".agent-chat__composer-shell")).toBeNull();
+    expect(indicator?.querySelectorAll(".chat-author-avatar")).toHaveLength(expectedAvatars);
+    expect(
+      indicator?.querySelector(".agent-chat__typing-avatars")?.getAttribute("aria-hidden"),
+    ).toBe("true");
+    expect(indicator?.textContent).toContain(expectedText);
+  });
+
+  it("keeps queue and error state above the typing status", () => {
+    const container = renderChatView({
+      typingActors: [{ id: "ayaan", label: "Ayaan" }],
+      runError: { summary: "Gateway unavailable" },
+      queue: [{ id: "queued", text: "Try again", createdAt: 1 }],
+    });
+    const indicator = requireElement(
+      container,
+      ".agent-chat__typing-indicator--outside",
+      "typing status",
+    );
+
+    expect(indicator.previousElementSibling?.classList.contains("chat-run-error")).toBe(true);
+    expect(indicator.nextElementSibling?.classList.contains("agent-chat__composer-shell")).toBe(
+      true,
+    );
+  });
+
+  it("hides typing status with the model setup composer", () => {
+    const container = renderChatView({
+      canSend: false,
+      modelSetupRequired: true,
+      typingActors: [{ id: "ayaan", label: "Ayaan" }],
+    });
+
+    expect(container.querySelector(".agent-chat__typing-indicator--outside")).toBeNull();
+  });
+});
+
 function createSessionWorkspace(
   overrides: Partial<NonNullable<ChatProps["sessionWorkspace"]>> = {},
 ): NonNullable<ChatProps["sessionWorkspace"]> {
@@ -794,7 +855,6 @@ function createBackgroundTasks(
       taskIds: new Set<string>(),
       nextExpiryAt: null,
     },
-    view: { kind: "list" },
     cancellingTaskIds: new Set<string>(),
     finishedCollapsed: false,
     taskDetails: new Map(),
@@ -804,9 +864,6 @@ function createBackgroundTasks(
     onToggleFinished: () => undefined,
     onRefresh: () => undefined,
     onCancel: () => undefined,
-    onSelectTask: () => undefined,
-    onBack: () => undefined,
-    onOpenTranscript: () => undefined,
     ...overrides,
   };
 }
@@ -1035,6 +1092,70 @@ describe("cloud workspace conflict notice", () => {
       "git show 'refs/openclaw/worker-results/claim-mixed:src/safe.ts'",
       "git checkout 'refs/openclaw/worker-results/claim-mixed' -- ':(top,literal)src/safe.ts'",
     ]);
+  });
+});
+
+describe("cloud worker disk-space notice", () => {
+  it.each([
+    {
+      status: "warning" as const,
+      availableBytes: 400 * 1024 * 1024,
+      role: "status",
+      title: "Cloud session disk space is low",
+      copy: "96% used · 400 MB free. Delete unneeded files or stop the cloud worker before large writes.",
+    },
+    {
+      status: "critical" as const,
+      availableBytes: 50 * 1024 * 1024,
+      role: "alert",
+      title: "Cloud session disk space is critically low",
+      copy: "New writes may fail and stop the agent.",
+    },
+  ])("renders persistent $status action guidance above the workbench", (sample) => {
+    const container = renderChatView({
+      diskSpace: {
+        status: sample.status,
+        availableBytes: sample.availableBytes,
+        totalBytes: 10 * 1024 * 1024 * 1024,
+        observedAtMs: 1_000,
+      },
+    });
+    const notice = requireElement(container, ".chat-cloud-disk-space-notice", "disk-space notice");
+
+    expect(notice.getAttribute("role")).toBe(sample.role);
+    expect(notice.textContent).toContain(sample.title);
+    expect(notice.textContent).toContain(sample.copy);
+    expect(notice.querySelector("svg")).not.toBeNull();
+    expect(notice.querySelector("button")).toBeNull();
+    expect(notice.nextElementSibling?.classList.contains("chat-workbench")).toBe(true);
+  });
+
+  it.each(["ok" as const, undefined])("clears for %s disk-space projection", (status) => {
+    const container = document.createElement("div");
+    renderChatInto(container, {
+      diskSpace: {
+        status: "warning",
+        availableBytes: 400,
+        totalBytes: 1_000,
+        observedAtMs: 1,
+      },
+    });
+    expect(container.querySelector(".chat-cloud-disk-space-notice")).not.toBeNull();
+
+    renderChatInto(
+      container,
+      status
+        ? {
+            diskSpace: {
+              status,
+              availableBytes: 800,
+              totalBytes: 1_000,
+              observedAtMs: 2,
+            },
+          }
+        : {},
+    );
+    expect(container.querySelector(".chat-cloud-disk-space-notice")).toBeNull();
   });
 });
 
@@ -5637,6 +5758,25 @@ describe("chat model controls", () => {
       getChatModelSelect(container).querySelector(".chat-controls__trigger-meta")?.textContent,
     ).toBe("1M");
     expect(modelOption?.closest("openclaw-tooltip")).toBeNull();
+  });
+
+  it("synthesizes a selectable row for a persisted override missing from the catalog", () => {
+    const { state } = createChatHeaderState({
+      model: "gpt-5.2-retired",
+      modelProvider: "openai",
+      models: [{ id: "gpt-5.6-sol", name: "GPT-5.6 Sol", provider: "openai" }],
+    });
+    const container = renderModelControls(state);
+
+    const optionValues = Array.from(
+      container.querySelectorAll<HTMLButtonElement>("[data-chat-model-option]"),
+    ).map((option) => option.getAttribute("data-chat-model-option"));
+    const overrideValue = optionValues.find((value) => value?.includes("gpt-5.2-retired"));
+    expect(overrideValue).toBeDefined();
+    const overrideOption = container.querySelector<HTMLButtonElement>(
+      `[data-chat-model-option="${overrideValue}"]`,
+    );
+    expect(overrideOption?.querySelector(".chat-controls__inline-select-check")).not.toBeNull();
   });
 
   it("distinguishes model rows that use different agent runtimes", () => {
