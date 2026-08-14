@@ -17,6 +17,7 @@ export const FIRST_USE_STATE_TABLES = [
   "execution_decision_facts",
 ] as const;
 export const FIRST_USE_STATE_INDEXES = [
+  "idx_node_worker_launches_terminal_completed",
   "execution_identity_contexts_run_created_idx",
   "execution_decision_facts_context_occurred_idx",
   "execution_decision_facts_run_occurred_idx",
@@ -31,6 +32,7 @@ export const LAZY_ADDITIVE_STATE_TABLES = [
   "secret_store_entries",
   "projects",
   "user_preferences",
+  "device_pair_setup_completions",
   "gateway_origin_device_tokens",
   "device_pairing_join_codes",
   "sidebar_sections",
