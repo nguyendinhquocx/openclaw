@@ -359,6 +359,29 @@ describe("createApplicationGateway connection phase", () => {
     expect(gateway.snapshot.lastError).toContain("4008");
   });
 
+  it("redacts a secret-shaped WebSocket close reason", () => {
+    const { gateway, current } = createStore();
+    gateway.start();
+
+    current().opts.onClose?.({
+      code: 1006,
+      reason: "OPENAI_API_KEY=sk-1234567890abcdef",
+      willRetry: true,
+    });
+
+    expect(gateway.snapshot.lastError).toContain("OPENAI_API_KEY=sk-123...cdef");
+    expect(gateway.snapshot.lastError).not.toContain("sk-1234567890abcdef");
+  });
+
+  it("uses translated fallback copy for an empty WebSocket close reason", () => {
+    const { gateway, current } = createStore();
+    gateway.start();
+
+    current().opts.onClose?.({ code: 1006, reason: "", willRetry: true });
+
+    expect(gateway.snapshot.lastError).toBe("disconnected (1006): Unknown");
+  });
+
   it("starts a newly selected Gateway as a fresh connection", () => {
     const { gateway, clients, current } = createStore();
     gateway.start();
@@ -522,6 +545,51 @@ describe("createApplicationGateway connection phase", () => {
     current().opts.onClose?.({ code: 4008, reason: "connect failed", willRetry: false });
 
     expect(gateway.snapshot.phase).toBe("offline");
+  });
+
+  it("schedules the guarded reload and publishes a terminal phase for a stale build", () => {
+    const { gateway, current } = createStore();
+    gateway.start();
+
+    current().opts.onClose?.({
+      code: 1008,
+      reason: "protocol mismatch: Control UI updated; reload this page to continue",
+      error: {
+        code: "UNAVAILABLE",
+        message: "protocol mismatch: Control UI updated; reload this page to continue",
+        details: {
+          code: ConnectErrorDetailCodes.PROTOCOL_MISMATCH,
+          gatewayBuildId: "replacement-build",
+          reloadRequired: true,
+        },
+      },
+      willRetry: false,
+    });
+
+    expect(scheduleStaleChunkReloadMock).toHaveBeenCalledExactlyOnceWith({
+      buildId: "replacement-build",
+    });
+    expect(gateway.snapshot.phase).toBe("reload-required");
+  });
+
+  it("keeps a bare protocol mismatch in the login-gate path", () => {
+    const { gateway, current } = createStore();
+    gateway.start();
+
+    current().opts.onClose?.({
+      code: 1008,
+      reason: "protocol mismatch",
+      error: {
+        code: "INVALID_REQUEST",
+        message: "protocol mismatch",
+        details: { code: ConnectErrorDetailCodes.PROTOCOL_MISMATCH },
+      },
+      willRetry: false,
+    });
+
+    expect(scheduleStaleChunkReloadMock).not.toHaveBeenCalled();
+    expect(gateway.snapshot.phase).toBe("stopped");
+    expect(gateway.snapshot.lastErrorCode).toBe(ConnectErrorDetailCodes.PROTOCOL_MISMATCH);
   });
 
   it("keeps reconnecting across event-gap recovery with a fresh client", () => {

@@ -11,7 +11,9 @@ import {
   type GatewayHelloOk,
 } from "../api/gateway.ts";
 import { CONTROL_UI_BUILD_INFO, controlUiBuildDiffersFrom } from "../build-info.ts";
+import { t } from "../i18n/index.ts";
 import { bumpCanvasWidgetFrameConnectionGeneration } from "../lib/chat/canvas-widget-frame-generation.ts";
+import { formatUiError, formatUiExternalText } from "../lib/format-error.ts";
 import { setAvatarGatewayOrigin } from "../lib/identity-avatar.ts";
 import { resolveSessionKey } from "../lib/sessions/index.ts";
 import { generateUUID } from "../lib/uuid.ts";
@@ -435,21 +437,27 @@ export function createApplicationGateway(
         if (mismatchedBuildId) {
           void scheduleStaleChunkReload({ buildId: mismatchedBuildId });
         }
+        const lastErrorCode = resolveGatewayErrorDetailCode(error) ?? error?.code ?? null;
         setSnapshot({
           ...snapshot,
           client: nextClient,
-          phase: everConnected
-            ? willRetry
-              ? "reconnecting"
-              : "offline"
-            : willRetry
-              ? "connecting"
-              : "stopped",
+          phase:
+            mismatchedBuildId !== null
+              ? "reload-required"
+              : everConnected
+                ? willRetry
+                  ? "reconnecting"
+                  : "offline"
+                : willRetry
+                  ? "connecting"
+                  : "stopped",
           hello: null,
           canvasPluginSurfaceUrl: null,
           selfUser: null,
-          lastError: error?.message ?? `disconnected (${code}): ${reason || "no reason"}`,
-          lastErrorCode: resolveGatewayErrorDetailCode(error) ?? error?.code ?? null,
+          lastError: error?.message
+            ? formatUiError(error.message)
+            : `disconnected (${code}): ${formatUiExternalText(reason, t("common.unknown"))}`,
+          lastErrorCode,
         });
       },
       onGap: ({ expected, received }) => {
