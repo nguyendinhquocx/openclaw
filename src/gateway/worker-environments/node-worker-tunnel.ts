@@ -1,4 +1,5 @@
 import fsp from "node:fs/promises";
+import { addTimerTimeoutGraceMs } from "@openclaw/normalization-core/number-coercion";
 import type { WorkerAdmissionHandshake } from "../../../packages/gateway-protocol/src/schema/worker-admission.js";
 import { sleepWithAbort } from "../../infra/backoff.js";
 import { NODE_WORKER_WORKSPACE_EXEC_COMMAND } from "../../infra/node-commands.js";
@@ -26,6 +27,7 @@ import {
   recordNodeSyncPath,
 } from "./node-worker-workspace-fallback.js";
 import type { NodeWorkspaceTransferService } from "./node-workspace-transfer-service.js";
+import type { WorkerSessionTurnClaim } from "./placement-record.js";
 import type { WorkerEnvironmentRecord } from "./store.js";
 import type {
   WorkerTunnelHandle,
@@ -45,6 +47,7 @@ import { workerWorkspaceResultStaging } from "./workspace-result-staging.js";
 import { REMOTE_WORKSPACE_MANIFEST_JS } from "./workspace-sync-scripts.js";
 
 const DEFAULT_COMMAND_TIMEOUT_MS = 60_000;
+const COMMAND_RESULT_GRACE_MS = 5_000;
 const RETRY_DELAY_MS = 100;
 const tunnelLog = createSubsystemLogger("gateway/worker-tunnel");
 const RETRYABLE_TRANSPORT_CODES = new Set([
@@ -95,12 +98,7 @@ type NodeWorkerTunnelManagerOptions = {
   getEnvironment: (environmentId: string) => WorkerEnvironmentRecord | undefined;
   getTransport: () => NodeWorkerSupervisorTransport | undefined;
   launchNodeWorker: NodeWorkerLaunch;
-  validateWorkerTurn: (binding: {
-    environmentId: string;
-    ownerEpoch: number;
-    sessionId: string;
-    runId: string;
-  }) => boolean;
+  validateWorkerTurn: (claim: WorkerSessionTurnClaim) => boolean;
   workspaceTransfer: NodeWorkspaceTransferService;
 };
 
@@ -233,9 +231,13 @@ export function createNodeWorkerTunnelManager(options: NodeWorkerTunnelManagerOp
     generation: number,
     command: WorkerWorkspaceCommand & { resetWorkspace?: boolean },
   ): Promise<NodeWorkerWorkspaceExecResult> => {
-    const timeoutMs = command.timeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS;
-    const deadline = Date.now() + timeoutMs;
-    const signals = [entry.abortController.signal, AbortSignal.timeout(timeoutMs)];
+    const commandTimeoutMs = command.timeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS;
+    // Keep the subprocess deadline authoritative while allowing its terminal result to cross the
+    // node transport. Equal deadlines turn an ordinary process timeout into a transport failure.
+    const transportTimeoutMs =
+      addTimerTimeoutGraceMs(commandTimeoutMs, COMMAND_RESULT_GRACE_MS) ?? commandTimeoutMs;
+    const deadline = Date.now() + transportTimeoutMs;
+    const signals = [entry.abortController.signal, AbortSignal.timeout(transportTimeoutMs)];
     if (command.signal) {
       signals.push(command.signal);
     }
@@ -247,7 +249,7 @@ export function createNodeWorkerTunnelManager(options: NodeWorkerTunnelManagerOp
       generation,
       argv: [...command.argv],
       ...(command.input === undefined ? {} : { input: command.input }),
-      ...(command.timeoutMs === undefined ? {} : { timeoutMs: command.timeoutMs }),
+      timeoutMs: commandTimeoutMs,
       ...(command.resetWorkspace === undefined ? {} : { resetWorkspace: command.resetWorkspace }),
       ...(command.transfer === undefined ? {} : { transfer: command.transfer }),
     };
@@ -517,21 +519,22 @@ export function createNodeWorkerTunnelManager(options: NodeWorkerTunnelManagerOp
       ownerEpoch: entry.ownerEpoch,
       launchTurn: async (request) => {
         const plan = request.plan;
+        const claim = request.turnClaim;
         const isDispatchAuthorized = () =>
           isEnvironmentOwner(entry as NodeTunnelEntry) &&
-          options.validateWorkerTurn({
-            environmentId: entry.environmentId,
-            ownerEpoch: entry.ownerEpoch,
-            sessionId: plan.admission.sessionId,
-            runId: plan.assignment.runId,
-          });
+          claim.owner.kind === "worker" &&
+          claim.owner.environmentId === entry.environmentId &&
+          claim.owner.ownerEpoch === entry.ownerEpoch &&
+          claim.sessionId === plan.admission.sessionId &&
+          claim.runId === plan.assignment.runId &&
+          options.validateWorkerTurn(claim);
         const operation = options.launchNodeWorker({
           deviceId: entry.deviceId,
           input: {
             launchId: plan.assignment.turnId,
             gatewayNamespace,
             expectedBundleHash: entry.expectedBuild.bundleHash,
-            placementGeneration: request.placementGeneration,
+            placementGeneration: claim.placementGeneration,
             descriptor: plan,
           },
           isDispatchAuthorized,
