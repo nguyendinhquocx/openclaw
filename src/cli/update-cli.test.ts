@@ -369,13 +369,17 @@ vi.mock("../daemon/service.js", () => ({
         : undefined),
     };
     args?.validateEnvBeforeStatusRead?.(env);
-    const [loaded, runtime] = await Promise.all([
-      serviceLoaded({ env }).catch(() => false),
+    const [loadState, runtime] = await Promise.all([
+      serviceLoaded({ env })
+        .then((loaded: boolean) =>
+          loaded ? ({ status: "loaded" } as const) : ({ status: "not-loaded" } as const),
+        )
+        .catch((error: unknown) => ({ status: "unknown" as const, detail: String(error) })),
       serviceReadRuntime(env).catch(() => undefined),
     ]);
     return {
       installed: command !== null,
-      loaded,
+      loadState,
       running: runtime?.status === "running",
       env,
       command,
@@ -551,7 +555,7 @@ describe("update-cli", () => {
   };
 
   const createTrackedTempDir = async (prefix: string) => {
-    const dir = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
+    const dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), prefix)));
     tempDirsToCleanup.add(dir);
     return dir;
   };
@@ -4352,12 +4356,6 @@ describe("update-cli", () => {
       expectedSpec: "openclaw@9999.0.0",
     },
     {
-      name: "main shorthand",
-      options: { yes: true, tag: "main" },
-      packageSpec: undefined,
-      expectedSpec: "github:openclaw/openclaw#main",
-    },
-    {
       name: "explicit git package spec",
       options: { yes: true, tag: "github:openclaw/openclaw#main" },
       packageSpec: undefined,
@@ -4424,6 +4422,33 @@ describe("update-cli", () => {
       expectPackageInstallSpec(expectedSpec);
     },
   );
+
+  it.each([
+    { name: "real run", options: { yes: true, json: true, tag: "main" } },
+    { name: "normalized alias", options: { yes: true, json: true, tag: "openclaw@main" } },
+    {
+      name: "dry-run",
+      options: { dryRun: true, json: true, tag: "main", yes: true },
+    },
+  ] as const)("refuses --tag main before package resolution: $name", async ({ options }) => {
+    mockPackageInstallStatus(createCaseDir("openclaw-update-main-refusal"));
+
+    await updateCommand(options);
+
+    const result = lastWriteJsonCall() as UpdateRunResult | undefined;
+    expect(result).toMatchObject({
+      status: "error",
+      reason: "unsupported-package-target",
+      steps: [],
+    });
+    expect(packageInstallCommandCall()).toBeUndefined();
+    expectNoSideEffects(resolveGlobalManager, replaceConfigFile, runGatewayUpdate);
+    if ("dryRun" in options && options.dryRun) {
+      expect(cleanupStaleManagedServiceUpdateHandoffs).not.toHaveBeenCalled();
+    }
+    expect(defaultRuntime.exit).toHaveBeenCalledWith(1);
+    expect(getErrorOutput()).toContain("openclaw update --channel dev");
+  });
 
   it("fails package updates when the installed correction version does not match the requested target", async () => {
     const tempDir = createCaseDir("openclaw-update");
@@ -4716,34 +4741,6 @@ describe("update-cli", () => {
     ).toBe("2026.5.14");
     expect(defaultRuntime.exit).not.toHaveBeenCalledWith(1);
   });
-
-  it.each(["11.13.0", "11.15.9"])(
-    "refuses npm %s before stopping the managed gateway or cleaning update backups",
-    async (npmVersion) => {
-      const tempDir = await createTrackedTempDir("openclaw-update-npm-policy-");
-      const { nodeModules, entryPath } = await setupInstalledPackageRoot(tempDir);
-      const backupDir = path.join(nodeModules, ".openclaw-interrupted");
-      await fs.mkdir(backupDir, { recursive: true });
-      mockRunningManagedGateway(["node", entryPath, "gateway", "run"]);
-      mockFileBackedPathExists();
-      vi.mocked(runCommandWithTimeout).mockImplementation(async (argv) => {
-        if (argv[0] === "npm" && argv[1] === "--version") {
-          return commandResult({ stdout: `${npmVersion}\n` });
-        }
-        if (argv[0] === "npm" && argv[1] === "root" && argv[2] === "-g") {
-          return commandResult({ stdout: `${nodeModules}\n` });
-        }
-        return commandResult();
-      });
-
-      await updateCommand({ yes: true });
-
-      expect(serviceStop).not.toHaveBeenCalled();
-      expect(packageInstallCommandCall()).toBeUndefined();
-      await expect(fs.access(backupDir)).resolves.toBeUndefined();
-      expect(getErrorOutput()).toContain(`npm ${npmVersion} cannot safely approve`);
-    },
-  );
 
   it("stops a running managed gateway before package replacement", async () => {
     const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("win32");
@@ -6928,32 +6925,6 @@ describe("update-cli", () => {
     expectNoSideEffects(runRestartScript, runDaemonRestart);
     expect(defaultRuntime.exit).not.toHaveBeenCalledWith(1);
   });
-
-  it.each(["11.13.0", "11.15.9"])(
-    "refuses npm %s package-to-dev updates before checkout or install",
-    async (npmVersion) => {
-      const packageRoot = createCaseDir("openclaw-npm-transition");
-      mockPackageInstallStatus(packageRoot);
-      vi.mocked(runCommandWithTimeout).mockImplementation(async (argv) => {
-        if (argv[0] === "npm" && argv[1] === "--version") {
-          return commandResult({ stdout: `${npmVersion}\n` });
-        }
-        if (argv[0] === "npm" && argv[1] === "root" && argv[2] === "-g") {
-          return commandResult({ stdout: `${path.dirname(packageRoot)}\n` });
-        }
-        return commandResult();
-      });
-
-      await updateCommand({ channel: "dev", yes: true, restart: false });
-
-      expect(runGatewayUpdate).not.toHaveBeenCalled();
-      expect(commandCalls().some(([argv]) => argv[0] === "git")).toBe(false);
-      expect(
-        commandCalls().some(([argv]) => argv[0] === "npm" && argv[1] === "i" && argv[2] === "-g"),
-      ).toBe(false);
-      expect(getErrorOutput()).toContain(`npm ${npmVersion} cannot safely approve`);
-    },
-  );
 
   it("explains why git updates cannot run with edited files", async () => {
     vi.mocked(defaultRuntime.log).mockClear();

@@ -1294,6 +1294,16 @@ export interface SkillUsage {
   use_count: number;
 }
 
+export interface SkillWorkshopCollectionReviews {
+  backup_id: string;
+  create_time: number;
+  dropped_json: string;
+  kept_names_json: string;
+  review_id: string;
+  workspace_dir: string;
+  written_names_json: string;
+}
+
 export interface SkillWorkshopProposalEvents {
   actor_json: string;
   correlation_id: string | null;
@@ -1326,6 +1336,7 @@ export interface SkillWorkshopProposalRollbacks {
 
 export interface SkillWorkshopProposals {
   applied_at: string | null;
+  claim_released_time: number | null;
   created_at: string;
   draft_hash: string;
   kind: string;
@@ -1604,6 +1615,7 @@ export interface WorkerSessionPlacementMoves {
   source_owner_epoch: number;
   target_id: string | null;
   target_kind: string;
+  target_machine_class: string | null;
   updated_at_ms: number;
 }
 
@@ -1858,6 +1870,7 @@ export interface DB {
   skill_upload_chunks: SkillUploadChunks;
   skill_uploads: SkillUploads;
   skill_usage: SkillUsage;
+  skill_workshop_collection_reviews: SkillWorkshopCollectionReviews;
   skill_workshop_proposal_events: SkillWorkshopProposalEvents;
   skill_workshop_proposal_origin_runs: SkillWorkshopProposalOriginRuns;
   skill_workshop_proposal_rollbacks: SkillWorkshopProposalRollbacks;
