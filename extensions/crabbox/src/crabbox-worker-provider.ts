@@ -19,12 +19,20 @@ import {
   runCrabboxCommand,
   stopCrabboxLease,
 } from "./crabbox-worker-command.js";
+import {
+  createCrabboxWorkerDesktopEndpoint,
+  createCrabboxWorkerDesktopSetup,
+} from "./crabbox-worker-desktop-setup.js";
 import { createCrabboxHeartbeatManager } from "./crabbox-worker-heartbeat.js";
 import { parseInspectJson, type ParsedInspect } from "./crabbox-worker-inspect.js";
+import { createCrabboxMachineOptionsResolver } from "./crabbox-worker-machine-options.js";
+import {
+  createCrabboxNodeEnrollmentSetup,
+  type CrabboxWorkerNodeEnrollment,
+} from "./crabbox-worker-node-enrollment.js";
 import {
   buildCrabboxWarmupArgs,
   CRABBOX_WORKER_PROVIDER_ID,
-  listCrabboxMachineOptions,
   nonEmptyString,
   operationLeaseId,
   operationSlug,
@@ -33,6 +41,7 @@ import {
 } from "./crabbox-worker-profile.js";
 import {
   countCrabboxProvisionSetupPhases,
+  CRABBOX_DESKTOP_WARMUP_TIMEOUT_MS,
   CRABBOX_LIFECYCLE_TIMEOUT_MS,
   CRABBOX_NODE_ENROLLMENT_TIMEOUT_MS,
   CRABBOX_SETUP_TIMEOUT_MS,
@@ -40,12 +49,12 @@ import {
   resolveCrabboxProvisionBaseTimeoutMs,
   resolveCrabboxProvisionCallTimeoutMs,
 } from "./crabbox-worker-timeouts.js";
+import { loadCrabboxWorkerWallpaperBase64 } from "./crabbox-worker-wallpaper.js";
 
 export { resolveOpenClawRoot } from "./crabbox-worker-profile.js";
 
 const READY_POLL_INTERVAL_MS = 2_000;
 const MAX_ERROR_DETAIL_CHARS = 512;
-const CLOUD_SETUP_CODE_ENV = "CRABBOX_WORKER_SETUP_CODE";
 // Only states that prove the resource is gone or stopped map to `destroyed`. Crabbox also
 // treats `deleting` and `failed` as unable to become ready, but those can retain resources
 // that still need an explicit stop during teardown.
@@ -64,11 +73,6 @@ const LEASE_ID_PATTERN = /^(?:cbx_|tbx_)[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u;
 const LEGACY_PROVISION_OPERATION_ID_PATTERN = /^provision:[a-f0-9]{64}$/u;
 
 type CrabboxProfile = ReturnType<typeof parseCrabboxProfile>;
-type WorkerNodeEnrollment = Awaited<
-  ReturnType<
-    NonNullable<NonNullable<Parameters<WorkerProvider["provision"]>[2]>["beginNodeEnrollment"]>
-  >
->;
 
 type LeaseCommandContext = { binary: string; id: string; provider: string };
 type LeaseHeartbeatContext = LeaseCommandContext &
@@ -89,6 +93,7 @@ type CrabboxWorkerProviderDependencies = {
   platform?: NodeJS.Platform;
   runCommand?: CrabboxCommandRunner;
   sleep?: (milliseconds: number) => Promise<void>;
+  wallpaperPath: string;
   warn?: (message: string) => void;
 };
 
@@ -238,69 +243,6 @@ async function waitForProvisionReady(
   }
 }
 
-function shellQuote(value: string): string {
-  return `'${value.replaceAll("'", `'"'"'`)}'`;
-}
-
-function nodeEnrollmentSetupCommand(params: {
-  enrollment: WorkerNodeEnrollment;
-  leaseId: string;
-}): string {
-  const { enrollment, leaseId } = params;
-  const stateDir = `.openclaw/cloud-workers/${leaseId}`;
-  const packageCandidates = enrollment.packageSpecs.map(shellQuote).join(" ");
-  if (!packageCandidates) {
-    throw new Error("Worker node enrollment has no OpenClaw package source");
-  }
-  const versionLabel = shellQuote(`OpenClaw ${enrollment.openclawVersion}`);
-  const versionMetadataPrefix = shellQuote(`OpenClaw ${enrollment.openclawVersion} `);
-  const setupCodeLines =
-    enrollment.mode === "connect"
-      ? [
-          'setup_code_file="$state_dir/setup-code"',
-          "umask 077",
-          `printf "%s\\n" "$${CLOUD_SETUP_CODE_ENV}" >"$setup_code_file"`,
-        ]
-      : [];
-  const launch =
-    enrollment.mode === "connect"
-      ? `connect --target-file "$setup_code_file" --ephemeral --display-name ${shellQuote(enrollment.displayName)}`
-      : `node run --ephemeral --display-name ${shellQuote(enrollment.displayName)}`;
-  return [
-    "set -eu",
-    `state_dir="$HOME/${stateDir}"`,
-    'mkdir -p "$state_dir"',
-    'chmod 700 "$state_dir"',
-    'pid_file="$state_dir/node.pid"',
-    'package_spec_file="$state_dir/package-spec"',
-    'if [ -s "$pid_file" ] && kill -0 "$(cat "$pid_file")" 2>/dev/null; then exit 0; fi',
-    ...setupCodeLines,
-    "if command -v openclaw >/dev/null 2>&1; then",
-    '  case "$(openclaw --version 2>/dev/null || true)" in',
-    `    ${versionLabel}|${versionMetadataPrefix}*) printf "%s\\n" "@global" >"$package_spec_file" ;;`,
-    "  esac",
-    "fi",
-    'if [ ! -s "$package_spec_file" ]; then',
-    '  rm -f "$package_spec_file"',
-    `  for package_candidate in ${packageCandidates}; do`,
-    '    if OPENCLAW_STATE_DIR="$state_dir" npx --yes --package "$package_candidate" -- openclaw --version >/dev/null 2>&1; then',
-    '      printf "%s\\n" "$package_candidate" >"$package_spec_file"',
-    "      break",
-    "    fi",
-    "  done",
-    "fi",
-    'test -s "$package_spec_file"',
-    'package_spec="$(cat "$package_spec_file")"',
-    'if [ "$package_spec" = "@global" ]; then',
-    `  setsid -f sh -c 'printf "%s\\n" "$$" >"$1"; shift; exec "$@"' sh "$pid_file" env OPENCLAW_STATE_DIR="$state_dir" openclaw ${launch} >"$state_dir/node.log" 2>&1 </dev/null`,
-    "else",
-    `  setsid -f sh -c 'printf "%s\\n" "$$" >"$1"; shift; exec "$@"' sh "$pid_file" env OPENCLAW_STATE_DIR="$state_dir" npx --yes --package "$package_spec" -- openclaw ${launch} >"$state_dir/node.log" 2>&1 </dev/null`,
-    "fi",
-    'for _ in 1 2 3 4 5 6 7 8 9 10; do [ -s "$pid_file" ] && break; sleep 0.1; done',
-    'test -s "$pid_file"',
-  ].join("\n");
-}
-
 // Setup runs on every provision attempt (including replay adoption), so commands
 // must be idempotent. A failed setup stops the lease before surfacing the error;
 // otherwise the caller cannot release a box it never learned about.
@@ -434,9 +376,11 @@ async function rejectAwsProfileAfterLeaseReconciliation(
 }
 
 export function createCrabboxWorkerProvider(
-  dependencies: CrabboxWorkerProviderDependencies = {},
+  dependencies: CrabboxWorkerProviderDependencies,
 ): WorkerProvider {
+  const wallpaperBase64 = loadCrabboxWorkerWallpaperBase64(dependencies.wallpaperPath);
   const runCommand = dependencies.runCommand ?? runCommandWithTimeout;
+  const warn = dependencies.warn ?? (() => {});
   const sleep =
     dependencies.sleep ??
     ((milliseconds) =>
@@ -463,7 +407,7 @@ export function createCrabboxWorkerProvider(
         signal,
         timeoutMs: Math.min(CRABBOX_LIFECYCLE_TIMEOUT_MS, context.heartbeatIntervalMs),
       }),
-    warn: dependencies.warn ?? (() => {}),
+    warn,
   });
   let defaultBinary: string | undefined;
   const resolveBinary = (explicit?: string) => {
@@ -479,6 +423,11 @@ export function createCrabboxWorkerProvider(
     });
     return defaultBinary;
   };
+  const listMachineOptions = createCrabboxMachineOptionsResolver({
+    resolveBinary,
+    runCommand,
+    warn,
+  });
   const resolveLeaseContext = (
     lease: Parameters<WorkerProvider["inspect"]>[0],
   ): LeaseHeartbeatContext => {
@@ -497,7 +446,7 @@ export function createCrabboxWorkerProvider(
 
   return {
     id: CRABBOX_WORKER_PROVIDER_ID,
-    listMachineOptions: listCrabboxMachineOptions,
+    listMachineOptions,
     supportedExecutionModes: ["worker-turn"],
     provisionBeforeInstallation: true,
     requiresNodeEnrollment: true,
@@ -517,12 +466,9 @@ export function createCrabboxWorkerProvider(
         );
       }
       const parsed = requestedClass ? { ...configured, class: requestedClass } : configured;
-      if (parsed.desktop) {
-        throw new WorkerProviderError(
-          "Crabbox desktop profiles are unavailable after node transport convergence",
-        );
-      }
-      const warmupTimeoutMs = CRABBOX_WARMUP_TIMEOUT_MS;
+      const warmupTimeoutMs = parsed.desktop
+        ? CRABBOX_DESKTOP_WARMUP_TIMEOUT_MS
+        : CRABBOX_WARMUP_TIMEOUT_MS;
       const deadline = Date.now() + resolveCrabboxProvisionBaseTimeoutMs(parsed);
       const setupDeadline =
         deadline +
@@ -609,21 +555,42 @@ export function createCrabboxWorkerProvider(
           sleep,
         });
       }
+      if (parsed.desktop) {
+        inspectedParams.inspect = await runProvisionSetupAndWaitReady({
+          ...inspectedParams,
+          setup: createCrabboxWorkerDesktopSetup(leaseId, wallpaperBase64),
+          sleep,
+        });
+      }
       const beginNodeEnrollment = options?.beginNodeEnrollment;
       if (!beginNodeEnrollment) {
+        await stopProvisionInspect(inspectedParams);
         throw new Error("Crabbox worker node enrollment is unavailable");
       }
-      const enrollment = await beginNodeEnrollment();
+      let enrollment: CrabboxWorkerNodeEnrollment;
+      try {
+        enrollment = await beginNodeEnrollment();
+      } catch (error) {
+        await stopProvisionInspect(inspectedParams);
+        throw error;
+      }
+      const nodeEnrollmentSetup = createCrabboxNodeEnrollmentSetup({ enrollment, leaseId });
       inspectedParams.inspect = await runProvisionSetupAndWaitReady({
         ...inspectedParams,
-        setup: nodeEnrollmentSetupCommand({ enrollment, leaseId }),
+        setup: nodeEnrollmentSetup.command,
         timeoutMs: CRABBOX_NODE_ENROLLMENT_TIMEOUT_MS,
-        ...(enrollment.mode === "connect"
-          ? { forwardedEnv: { [CLOUD_SETUP_CODE_ENV]: enrollment.setupCode } }
+        ...(nodeEnrollmentSetup.forwardedEnv
+          ? { forwardedEnv: nodeEnrollmentSetup.forwardedEnv }
           : {}),
         sleep,
       });
-      const deviceId = await enrollment.waitForDeviceId();
+      let deviceId: string;
+      try {
+        deviceId = await enrollment.waitForDeviceId();
+      } catch (error) {
+        await stopProvisionInspect(inspectedParams);
+        throw error;
+      }
       heartbeats.start({
         binary,
         heartbeatIntervalMs: parsed.heartbeatIntervalMs,
@@ -635,6 +602,7 @@ export function createCrabboxWorkerProvider(
         leaseId,
         node: { deviceId },
         sharedHost: false,
+        ...(parsed.desktop ? { desktop: createCrabboxWorkerDesktopEndpoint() } : {}),
       };
     },
     async inspect(lease): Promise<WorkerLeaseStatus> {
