@@ -292,6 +292,13 @@ the general protocol version. Frames stay under 64 KiB, except a negotiated
 `worker.heartbeat`, `worker.transcript.commit`, `worker.live-event`,
 `worker.inference.start`, and `worker.inference.cancel`.
 
+For an identity-audited attached run, the live turn capability can record the
+credential, build, owner-epoch, and placement checks as one enforced admission
+receipt. The receipt contains none of the credential, build hashes, tokens,
+environment id, or session id. Worker operation rows and placement state remain
+their authoritative owners; successful connection is not an action-success
+receipt.
+
 Transcript commits use owner-epoch fencing, a gateway-owned session binding,
 base-leaf compare-and-swap, and durable sequence replay; the gateway generates
 transcript entry and parent IDs through the normal session writer. Ownership and
@@ -588,7 +595,7 @@ methods. Treat this as feature discovery, not a full enumeration of
     - `talk.config` returns the effective Talk config payload; `includeSecrets` requires `operator.talk.secrets` (or `operator.admin`).
     - `talk.session.create` (`operator.talk`) creates a gateway-owned Talk session for `realtime/gateway-relay`, `transcription/gateway-relay`, or `stt-tts/managed-room`. For `stt-tts/managed-room`, non-admin callers that pass `sessionKey` must also pass `spawnedBy` for scoped session-key visibility; unscoped `sessionKey` creation and `brain: "direct-tools"` require `operator.admin`.
     - `talk.session.appendAudio` appends base64 PCM input audio to gateway-owned realtime relay and transcription sessions.
-    - `talk.session.cancelOutput` stops assistant audio output, primarily for VAD-gated barge-in in gateway relay sessions.
+    - `talk.session.cancelOutput` stops assistant audio output, primarily for VAD-gated barge-in in gateway relay sessions. Send the current `talk.event.turnId`; the result is `applied`, `stale`, or `idle`.
     - `talk.session.submitToolResult` completes a provider tool call emitted by a gateway-owned realtime relay session. The request waits for any asynchronous completion signal exposed by the provider bridge; failed submissions keep the linked run active and do not emit a successful tool-result event. Pass `options: { willContinue: true }` for interim tool output or `options: { suppressResponse: true }` when the provider bridge advertises suppression support and the result should not start another response.
     - `talk.session.steer` sends active-run voice control into a gateway-owned agent-backed Talk session: `{ sessionId, text, mode? }`, where `mode` is `status`, `steer`, `cancel`, or `followup`; omitted mode is classified from the spoken text.
     - `talk.session.close` closes a gateway-owned relay, transcription, or managed-room session and emits terminal Talk events.
