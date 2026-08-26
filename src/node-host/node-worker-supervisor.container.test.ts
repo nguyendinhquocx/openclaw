@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
 import type { WorkerConnectionEndpoint } from "../worker/worker-connection-endpoint.js";
+import { NodeWorkerContainerLifecycle } from "./node-worker-container-lifecycle.js";
 import { NodeWorkerLaunchStore } from "./node-worker-launch-store.js";
 import { requireNodeWorkerProcessIdentity } from "./node-worker-process-identity.js";
 import { createNodeWorkerSupervisor } from "./node-worker-supervisor.js";
@@ -32,7 +33,9 @@ if (process.connected || process.argv.includes("--internal-worker-ipc")) {
   process.stderr.write("container worker unexpectedly received Node IPC");
   process.exit(24);
 }
-if (descriptor.assignment.prompt === "wait") {
+if (descriptor.assignment.prompt === "admission-failure") {
+  throw new Error("worker admission deadline exceeded after 9 attempts to gateway.example:443: connect failed: Opening handshake has timed out " + descriptor.admission.credential);
+} else if (descriptor.assignment.prompt === "wait") {
   fs.writeFileSync(descriptor.assignment.workspaceDir + "/worker-started", "started");
   setInterval(() => {}, 1000);
 } else {
@@ -130,7 +133,9 @@ if (command === "version") {
 } else if (command === "info") {
   const daemonId = fs.readFileSync(path.join(engineRoot, "daemon-id"), "utf8");
   record({ argv: args, daemonId });
-  process.stdout.write(daemonId + "\n");
+  const delayFile = path.join(engineRoot, "info-delay-ms");
+  const delayMs = fs.existsSync(delayFile) ? Number(fs.readFileSync(delayFile, "utf8")) : 0;
+  setTimeout(() => process.stdout.write(daemonId + "\n"), delayMs);
 } else if (command === "create") {
   const id = createHash("sha256").update(JSON.stringify(args)).digest("hex");
   const labels = {};
@@ -496,6 +501,28 @@ describe("node worker supervisor container isolation", () => {
     }
   });
 
+  it("persists the container worker's admission diagnosis from stderr without credentials", async () => {
+    const fixture = containerFixture();
+    const input = testWorkerLaunchInput(
+      fixture.workspaceDir,
+      "container-admission-failure",
+      "admission-failure",
+    );
+    try {
+      await fixture.supervisor.launch(input, endpoint);
+      const failed = await waitForTerminal(fixture.supervisor, input.launchId);
+      expect(failed).toMatchObject({ state: "failed" });
+      expect(failed?.errorText).toContain(
+        "worker admission deadline exceeded after 9 attempts to gateway.example:443: connect failed: Opening handshake has timed out",
+      );
+      expect(failed?.errorText).not.toContain(input.descriptor.admission.credential);
+      expect(Buffer.byteLength(failed?.errorText ?? "", "utf8")).toBeLessThanOrEqual(4_096);
+      expect((await fixture.supervisor.status(input.launchId))?.errorText).toBe(failed?.errorText);
+    } finally {
+      await fixture.supervisor.close();
+    }
+  });
+
   it("keeps a launch running while its container is still starting", async () => {
     const fixture = containerFixture();
     const input = testWorkerLaunchInput(fixture.workspaceDir, "container-startup-poll");
@@ -566,6 +593,56 @@ describe("node worker supervisor container isolation", () => {
     }
   });
 
+  it(
+    "launches after a busy daemon takes six seconds to revalidate",
+    { timeout: 15_000 },
+    async () => {
+      const fixture = containerFixture();
+      const input = testWorkerLaunchInput(fixture.workspaceDir, "container-busy-daemon");
+      fs.writeFileSync(path.join(fixture.engineRoot, "info-delay-ms"), "6000");
+
+      try {
+        expect(await fixture.supervisor.launch(input, endpoint)).toMatchObject({
+          state: "running",
+        });
+        expect(await waitForTerminal(fixture.supervisor, input.launchId)).toMatchObject({
+          state: "completed",
+        });
+      } finally {
+        await fixture.supervisor.close();
+      }
+    },
+  );
+
+  it(
+    "records the revalidation command when the daemon exceeds its deadline",
+    { timeout: 45_000 },
+    async () => {
+      const fixture = containerFixture();
+      const input = testWorkerLaunchInput(fixture.workspaceDir, "container-unresponsive-daemon");
+      fs.writeFileSync(path.join(fixture.engineRoot, "info-delay-ms"), "35000");
+
+      try {
+        const failed = await fixture.supervisor.launch(input, endpoint);
+
+        expect(failed.state).toBe("failed");
+        expect(failed.errorText).toMatch(/Command timed out after \d+ milliseconds:/u);
+        expect(failed.errorText).toContain("docker info --format '{{.ID}}'");
+        expect(await fixture.supervisor.status(input.launchId)).toMatchObject({
+          state: "failed",
+          errorText: failed.errorText,
+        });
+        expect(
+          fixture
+            .events()
+            .filter((event) => event.argv[0] === "create" || event.argv[0] === "start"),
+        ).toEqual([]);
+      } finally {
+        await fixture.supervisor.close();
+      }
+    },
+  );
+
   it("keeps a pending cancelled container slot occupied until the fake engine confirms removal", async () => {
     const capacitySnapshots: Array<{ total: number; available: number }> = [];
     const fixture = containerFixture({
@@ -611,6 +688,47 @@ describe("node worker supervisor container isolation", () => {
         if (fs.existsSync(marker)) {
           fs.unlinkSync(marker);
         }
+      }
+      await fixture.supervisor.close();
+    }
+  });
+
+  it("cancels a claimed container launch when its invocation aborts during creation", async () => {
+    const capacitySnapshots: Array<{ total: number; available: number }> = [];
+    const fixture = containerFixture({
+      capacity: 1,
+      onCapacityChanged: (capacity) => capacitySnapshots.push(capacity),
+    });
+    const input = testWorkerLaunchInput(fixture.workspaceDir, "container-creation-abort", "wait");
+    const createMarker = path.join(fixture.engineRoot, "hold-create");
+    const store = new NodeWorkerLaunchStore({ env: fixture.env });
+    const controller = new AbortController();
+    fs.writeFileSync(createMarker, "hold");
+
+    try {
+      const launch = fixture.supervisor.launch(input, endpoint, controller.signal);
+      await vi.waitFor(
+        () => expect(fixture.events().some((event) => event.argv[0] === "create")).toBe(true),
+        { timeout: 5_000 },
+      );
+      const container = fixture.events().find((event) => event.argv[0] === "create")?.container;
+      if (!container) {
+        throw new Error("expected a claimed container under creation");
+      }
+      expect(store.get(input.launchId)?.state).toBe("pending");
+      expect(capacitySnapshots.at(-1)).toEqual({ total: 1, available: 0 });
+
+      controller.abort(new Error("invoke cancelled"));
+      fs.unlinkSync(createMarker);
+      await launch.catch(() => undefined);
+
+      expect(store.get(input.launchId)).toMatchObject({ state: "cancelled" });
+      expect(fixture.exists(container.id)).toBe(false);
+      expect(fs.existsSync(path.join(fixture.workspaceDir, "worker-started"))).toBe(false);
+      expect(capacitySnapshots.at(-1)).toEqual({ total: 1, available: 1 });
+    } finally {
+      if (fs.existsSync(createMarker)) {
+        fs.unlinkSync(createMarker);
       }
       await fixture.supervisor.close();
     }
@@ -836,6 +954,73 @@ describe("node worker supervisor container isolation", () => {
       if (fs.existsSync(failureMarker)) {
         fs.unlinkSync(failureMarker);
       }
+      await fixture.supervisor.close();
+    }
+  });
+
+  it("waits for healthy container shutdown before reporting a sibling removal failure", async () => {
+    const fixture = containerFixture({ capacity: 2 });
+    const first = testWorkerLaunchInput(fixture.workspaceDir, "container-close-failed", "wait");
+    const sibling = testWorkerLaunchInput(fixture.workspaceDir, "container-close-sibling", "wait");
+    const removalMarker = path.join(fixture.engineRoot, "hold-removal");
+    const store = new NodeWorkerLaunchStore({ env: fixture.env });
+    const removalFailure = new Error("injected first container removal failure");
+    const originalRemove = Reflect.get(
+      NodeWorkerContainerLifecycle.prototype,
+      "remove",
+    ) as NodeWorkerContainerLifecycle["remove"];
+    const remove = vi
+      .spyOn(NodeWorkerContainerLifecycle.prototype, "remove")
+      .mockImplementation(async function (this: NodeWorkerContainerLifecycle, container, owner) {
+        if (owner.launchId === first.launchId) {
+          throw removalFailure;
+        }
+        await originalRemove.call(this, container, owner);
+      });
+
+    try {
+      const failedWorker = await fixture.supervisor.launch(first, endpoint);
+      const siblingWorker = await fixture.supervisor.launch(sibling, endpoint);
+      await vi.waitFor(
+        () => expect(fixture.events().filter((event) => event.argv[0] === "start")).toHaveLength(2),
+        { timeout: 5_000 },
+      );
+      fs.writeFileSync(removalMarker, "hold");
+
+      const closing = fixture.supervisor.close();
+      const settled = vi.fn();
+      void closing.then(settled, settled);
+      await vi.waitFor(
+        () =>
+          expect(
+            fixture
+              .events()
+              .some(
+                (event) =>
+                  event.argv[0] === "rm" &&
+                  event.argv.at(-1) === siblingWorker.container!.containerId,
+              ),
+          ).toBe(true),
+        { timeout: 5_000 },
+      );
+
+      expect(settled).not.toHaveBeenCalled();
+      expect(fixture.exists(siblingWorker.container!.containerId)).toBe(true);
+
+      fs.unlinkSync(removalMarker);
+      await expect(closing).rejects.toBe(removalFailure);
+      expect(fixture.exists(siblingWorker.container!.containerId)).toBe(false);
+      expect(store.get(sibling.launchId)).toMatchObject({ state: "interrupted" });
+      expect(fixture.exists(failedWorker.container!.containerId)).toBe(true);
+      expect(store.get(first.launchId)).toMatchObject({
+        state: "running",
+        container: failedWorker.container,
+      });
+    } finally {
+      if (fs.existsSync(removalMarker)) {
+        fs.unlinkSync(removalMarker);
+      }
+      remove.mockRestore();
       await fixture.supervisor.close();
     }
   });
