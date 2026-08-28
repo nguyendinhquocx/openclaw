@@ -1,7 +1,6 @@
 // OpenClaw agent database tests cover agent-scoped DB storage and migrations.
 import { execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { cleanupTempDirs, makeTempDir } from "../../test/helpers/temp-dir.js";
@@ -50,6 +49,7 @@ import {
   readOpenClawAgentDatabaseRegistryToken,
   resolveOpenClawAgentSqlitePath,
   runOpenClawAgentWriteTransaction,
+  withAgentDatabaseMaintenanceLease,
 } from "./openclaw-agent-db.js";
 import { OPENCLAW_AGENT_SCHEMA_SQL } from "./openclaw-agent-schema.js";
 import {
@@ -992,26 +992,23 @@ describe("openclaw agent database", () => {
     ).toBe(path.join(stateDir, "agents", "worker-1", "agent", "openclaw-agent.sqlite"));
   });
 
-  it("keeps test default state under a worker-sharded temp directory", () => {
-    expect(
-      resolveOpenClawAgentSqlitePath({
-        agentId: "main",
-        env: {
-          VITEST: "true",
-          VITEST_WORKER_ID: "7",
-        } as NodeJS.ProcessEnv,
-      }),
-    ).toBe(
-      path.join(
-        os.tmpdir(),
-        "openclaw-test-state",
-        `${process.pid}-7`,
-        "agents",
-        "main",
-        "agent",
-        "openclaw-agent.sqlite",
-      ),
-    );
+  it("opens the agent and its shared registry under the default HOME state owner", () => {
+    const home = createTempStateDir();
+    const env = { HOME: home, NODE_ENV: "test" };
+    const options = { agentId: "main", env };
+    const stateDir = path.join(home, ".openclaw");
+    const agentPath = path.join(stateDir, "agents", "main", "agent", "openclaw-agent.sqlite");
+
+    // Fail before opening if path resolution escapes the test-owned home.
+    expect(resolveOpenClawAgentSqlitePath(options)).toBe(agentPath);
+    const agent = openOpenClawAgentDatabaseRuntime(options);
+    const shared = openOpenClawStateDatabase({ env });
+
+    expect(agent.path).toBe(agentPath);
+    expect(shared.path).toBe(path.join(stateDir, "state", "openclaw.sqlite"));
+    expect(listOpenClawRegisteredAgentDatabases({ env })).toEqual([
+      expect.objectContaining({ agentId: "main", path: agentPath }),
+    ]);
   });
 
   it("returns typed not-found without creating a missing read-only database", () => {
@@ -2820,6 +2817,8 @@ describe("openclaw agent database", () => {
             process.chdir(previousCwd);
             closeOpenClawAgentDatabasesForTest();
             closeOpenClawStateDatabaseForTest();
+            fs.rmSync(root, { recursive: true, force: true });
+            fs.rmSync(stateDir, { recursive: true, force: true });
           }
         `,
       ],
@@ -3089,6 +3088,88 @@ describe("openclaw agent database", () => {
       releaseOpenClawAgentDatabaseLease(leaseId, { env });
       deletion.rollback();
     }
+  });
+
+  it("closes cached agent databases and fences new writers during maintenance", async () => {
+    const stateDir = createTempStateDir();
+    const env = { OPENCLAW_STATE_DIR: stateDir };
+    const database = openOpenClawAgentDatabase({ agentId: "worker-1", env });
+    let assertRetainedOwnership: (() => void) | undefined;
+
+    await withAgentDatabaseMaintenanceLease({ env }, async (maintenance) => {
+      assertRetainedOwnership = () => maintenance.assertOwned();
+      expect(database.db.isOpen).toBe(false);
+      expect(() => openOpenClawAgentDatabase({ agentId: "worker-1", env })).toThrow(
+        "Agent database maintenance is in progress",
+      );
+      expect(() =>
+        claimOpenClawAgentDatabaseLease({
+          agentId: "worker-2",
+          path: path.join(stateDir, "worker-2.sqlite"),
+          env,
+        }),
+      ).toThrow("Agent database maintenance is in progress");
+      expect(() =>
+        runOpenClawStateWriteTransaction(({ db }) => maintenance.assertOwnedInTransaction(db), {
+          env,
+        }),
+      ).not.toThrow();
+    });
+
+    expect(assertRetainedOwnership).toBeDefined();
+    expect(() => assertRetainedOwnership?.()).toThrow("was lost");
+    expect(openOpenClawAgentDatabase({ agentId: "worker-1", env }).db.isOpen).toBe(true);
+  });
+
+  it("refuses maintenance while another owner still holds an agent database lease", async () => {
+    const stateDir = createTempStateDir();
+    const env = { OPENCLAW_STATE_DIR: stateDir };
+    const leaseId = claimOpenClawAgentDatabaseLease({
+      agentId: "worker-1",
+      path: path.join(stateDir, "worker-1.sqlite"),
+      env,
+    });
+    const repair = vi.fn(async () => undefined);
+
+    try {
+      await expect(withAgentDatabaseMaintenanceLease({ env }, repair)).rejects.toThrow(
+        "stop that process and rerun openclaw doctor --fix",
+      );
+      expect(repair).not.toHaveBeenCalled();
+      expect(() => assertNoOpenClawAgentDatabaseLeases("worker-1", { env })).toThrow(
+        "database is still open",
+      );
+    } finally {
+      releaseOpenClawAgentDatabaseLease(leaseId, { env });
+    }
+
+    await expect(withAgentDatabaseMaintenanceLease({ env }, repair)).resolves.toBeUndefined();
+    expect(repair).toHaveBeenCalledOnce();
+  });
+
+  it("removes dead agent database owners before beginning fenced maintenance", async () => {
+    const stateDir = createTempStateDir();
+    const env = { OPENCLAW_STATE_DIR: stateDir };
+    const leaseId = claimOpenClawAgentDatabaseLease({
+      agentId: "worker-1",
+      path: path.join(stateDir, "worker-1.sqlite"),
+      env,
+    });
+    runOpenClawStateWriteTransaction(
+      ({ db }) =>
+        db
+          .prepare("UPDATE agent_database_leases SET owner_pid = -1 WHERE lease_id = ?")
+          .run(leaseId),
+      { env },
+    );
+
+    await withAgentDatabaseMaintenanceLease({ env }, async () => {
+      expect(
+        openOpenClawStateDatabase({ env })
+          .db.prepare("SELECT lease_id FROM agent_database_leases WHERE lease_id = ?")
+          .get(leaseId),
+      ).toBeUndefined();
+    });
   });
 
   it("serializes concurrent ownership claims for one unowned database", async () => {

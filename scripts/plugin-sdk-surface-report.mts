@@ -316,7 +316,14 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +1: typed owner-declared approval-scope contract for plugin-authored approvals.
       // -5: approval display sanitizers moved to a non-public leaf module
       //     (exec-approval-text-sanitize) to break the exec-approvals cycle.
-      4338,
+      // +3: typed ask_user option-index contract and two bounded owner-order resolvers.
+      // +2: exact-session deletion parameters and synchronous companion mutation contract.
+      // +2: canonical session-model selection and auxiliary runtime-auth preparation.
+      // +1: identifier authentication input type for external channel plugins.
+      // +1: shared channel-account logout config cleanup.
+      // +1: descriptor-based allowFrom authentication classifier for channel security audits.
+      // +1: downstream strength mappers need canonical ordering instead of duplicate rank tables.
+      4349,
       env,
     ),
     publicFunctionExports: readPluginSdkSurfaceBudgetEnv(
@@ -411,7 +418,12 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +1: embedded foreground prompt context builder.
       // -4: approval display sanitizers moved to a non-public leaf module
       //     (exec-approval-text-sanitize) to break the exec-approvals cycle.
-      2578,
+      // +2: bounded ask_user owner-order map builder and option resolver.
+      // +2: canonical session-model selection and auxiliary runtime-auth preparation.
+      // +1: shared channel-account logout config cleanup.
+      // +1: descriptor-based allowFrom authentication classifier for channel security audits.
+      // +1: downstream strength mappers need canonical ordering instead of duplicate rank tables.
+      2585,
       env,
     ),
     publicDeprecatedExports: readPluginSdkSurfaceBudgetEnv(

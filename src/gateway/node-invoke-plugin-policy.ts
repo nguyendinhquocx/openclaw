@@ -192,7 +192,11 @@ function createApprovalRuntime(params: {
         decisionPromise,
         respond,
         context: params.context,
-        clientConnId: params.client?.connId,
+        // The carried connection is turn/invoke provenance, never this
+        // approval's presenter: policy approvals are minted here, not requested
+        // by the client, so the connection stays eligible as a reviewer. A
+        // sole-reviewer operator would otherwise be excluded from delivery and
+        // the request auto-denied as no-route.
         requestEventName: "plugin.approval.requested",
         requestEvent,
         twoPhase: false,

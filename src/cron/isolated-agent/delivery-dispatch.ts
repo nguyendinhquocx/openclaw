@@ -317,8 +317,8 @@ export async function dispatchCronDelivery(
         isCronSessionKey(params.agentSessionKey) &&
         isSameSessionKey(deliverySessionKey, params.agentSessionKey);
 
-      // Track bestEffort partial failures so we can log them and avoid
-      // marking the job as delivered when payloads were silently dropped.
+      // The batch outcome owns failure state; per-payload errors can belong to
+      // a proven-not-sent attempt that succeeds on retry.
       let hadPartialFailure = false;
       let completedByConcurrentDelivery = false;
       let payloadMayHaveReachedRecipientBeforeFailure = false;
@@ -338,6 +338,7 @@ export async function dispatchCronDelivery(
         directCronRouteCommitted = true;
         await commitDirectCronOutboundRoute({
           cfg: params.cfgWithAgentDefaults,
+          runSessionKey: params.runSessionKey,
           delivery,
           route: directCronOutboundRoute,
         });
@@ -347,8 +348,6 @@ export async function dispatchCronDelivery(
       const attemptedPayloadsForMirror: NormalizedOutboundPayload[] = [];
       const onError = params.deliveryBestEffort
         ? (err: unknown, _payload: unknown) => {
-            hadPartialFailure = true;
-            deliveryError ??= formatErrorMessage(err);
             logCronDeliveryErrorDeferred(
               `[cron:${params.job.id}] delivery payload failed (bestEffort): ${formatErrorMessage(err)}`,
             );
@@ -577,6 +576,9 @@ export async function dispatchCronDelivery(
       }
       return null;
     } catch (err) {
+      await logCronDeliveryError(
+        `[cron:${params.job.id}] delivery failed (${params.deliveryBestEffort ? "bestEffort" : "required"}): ${formatErrorMessage(err)}`,
+      );
       if (!params.deliveryBestEffort) {
         return params.withRunSession({
           status: "error",
@@ -587,9 +589,6 @@ export async function dispatchCronDelivery(
           ...params.telemetry,
         });
       }
-      await logCronDeliveryError(
-        `[cron:${params.job.id}] delivery failed (bestEffort): ${formatErrorMessage(err)}`,
-      );
       deliveryError = formatErrorMessage(err);
       return null;
     }

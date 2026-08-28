@@ -9,8 +9,8 @@ import {
 } from "@openclaw/normalization-core/string-normalization";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
-import { buildPluginApi } from "./api-builder.js";
-import { collectPluginConfigContractMatches } from "./config-contracts.js";
+import { buildPluginApi, createUnavailableRuntime } from "./api-builder.js";
+import { hasPluginConfigMigrationSource } from "./config-contract-matches.js";
 import { getCurrentPluginMetadataSnapshotState } from "./current-plugin-metadata-state.js";
 import type { PluginManifestRecord, PluginManifestRegistry } from "./manifest-registry.js";
 import { createPluginCacheKey, PluginLruCache } from "./plugin-cache-primitives.js";
@@ -23,7 +23,6 @@ import {
 } from "./plugin-module-loader-cache.js";
 import { loadPluginManifestRegistryForPluginRegistry } from "./plugin-registry.js";
 import { resolvePreferredBundledRootArtifact } from "./plugin-runtime-artifact-selection.js";
-import type { PluginRuntime } from "./runtime/types.js";
 import { listSetupCliBackendIds, listSetupProviderIds } from "./setup-descriptors.js";
 import { pluginSetupRegistryLoaderState } from "./setup-registry-loader-state.js";
 import type {
@@ -94,7 +93,6 @@ type SetupAutoEnableReason = {
 
 type PluginApiBuildParams = Parameters<typeof buildPluginApi>[0];
 
-const EMPTY_RUNTIME = {} as PluginRuntime;
 const NOOP_LOGGER: PluginLogger = {
   info() {},
   warn() {},
@@ -194,18 +192,11 @@ function resolveRelevantSetupMigrationPluginIds(params: {
     env: params.env,
   });
   for (const plugin of registry.plugins) {
-    const paths = plugin.configContracts?.compatibilityMigrationPaths;
-    if (!paths?.length) {
-      continue;
-    }
     if (
-      paths.some(
-        (pathPattern) =>
-          collectPluginConfigContractMatches({
-            root: params.config,
-            pathPattern,
-          }).length > 0,
-      )
+      hasPluginConfigMigrationSource({
+        root: params.config,
+        pathPatterns: plugin.configContracts?.compatibilityMigrationPaths,
+      })
     ) {
       ids.add(plugin.id);
     }
@@ -312,7 +303,7 @@ function buildSetupPluginApi(params: {
     rootDir: params.record.rootDir,
     registrationMode: "setup-only",
     config: {} as OpenClawConfig,
-    runtime: EMPTY_RUNTIME,
+    runtime: createUnavailableRuntime("setup-only", params.record.id),
     logger: NOOP_LOGGER,
     resolvePath: (input) => input,
     handlers: params.handlers,
