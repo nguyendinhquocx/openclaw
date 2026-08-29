@@ -639,34 +639,6 @@ jobs:
             "platforms;android-36" \
             "build-tools;36.0.0"
 
-      - name: Restore Robolectric Maven cache
-        id: robolectric-cache
-        if: startsWith(matrix.task, 'test-') && needs.preflight.outputs.cache_mode != 'off'
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: /var/tmp/openclaw-robolectric-m2
-          key: ${{ github.repository }}-robolectric-m2-v1-${{ runner.os }}-${{ runner.arch }}-${{ matrix.task }}-${{ hashFiles('apps/android/**/*.gradle*', 'apps/android/**/gradle-wrapper.properties', 'apps/android/gradle/libs.versions.toml', 'apps/android/**/src/test*/**') }}
-          restore-keys: |
-            ${{ github.repository }}-robolectric-m2-v1-${{ runner.os }}-${{ runner.arch }}-${{ matrix.task }}-
-
-      - name: Configure Robolectric Maven cache
-        if: startsWith(matrix.task, 'test-')
-        shell: bash
-        run: |
-          set -euo pipefail
-          maven_repo=/var/tmp/openclaw-robolectric-m2
-          init_script="$RUNNER_TEMP/openclaw-robolectric-init.gradle"
-          mkdir -p "$maven_repo"
-          cat >"$init_script" <<'GROOVY'
-          allprojects {
-            tasks.withType(org.gradle.api.tasks.testing.Test).configureEach {
-              systemProperty "maven.repo.local", System.getenv("OPENCLAW_ROBOLECTRIC_M2")
-            }
-          }
-          GROOVY
-          echo "OPENCLAW_ROBOLECTRIC_M2=$maven_repo" >> "$GITHUB_ENV"
-          echo "OPENCLAW_ROBOLECTRIC_INIT=$init_script" >> "$GITHUB_ENV"
-
       - name: Run Android ${{ matrix.task }}
         working-directory: apps/android
         run: ${{ matrix.command }}
