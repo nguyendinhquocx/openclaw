@@ -293,7 +293,7 @@ function resolveBoundConversationSessionKey(params: {
     return undefined;
   }
   if (params.touch !== false) {
-    getSessionBindingService().touch(binding.bindingId);
+    getSessionBindingService().touch(binding.bindingId, undefined, binding.conversation);
   }
   // Plugins own their target handoff; escaped commands still initialize the core session.
   return isPluginOwnedSessionBindingRecord(binding) ? undefined : binding.targetSessionKey;
@@ -305,8 +305,7 @@ function resolveInitSessionStateAttemptContext(
 ): InitSessionStateAttemptContext {
   const { cfg, ctx } = params;
   // Automated system events must not reset sessions or retarget conversation bindings.
-  const isSystemEvent =
-    ctx.Provider === "heartbeat" || ctx.Provider === "cron-event" || ctx.Provider === "exec-event";
+  const isSystemEvent = ctx.InternalTurnSource !== undefined;
   const conversationBindingContext = isSystemEvent
     ? null
     : resolveSessionConversationBindingContext(cfg, ctx);

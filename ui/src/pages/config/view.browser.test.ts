@@ -923,7 +923,7 @@ describe("config view", () => {
       webPush: {
         supported: true,
         permission: "default",
-        subscribed: false,
+        subscription: "missing",
         loading: false,
       },
     });
@@ -950,7 +950,7 @@ describe("config view", () => {
       webPush: {
         supported: true,
         permission: "default",
-        subscribed: false,
+        subscription: "missing",
         loading: false,
       },
     });
@@ -2208,6 +2208,9 @@ describe("config view", () => {
       "System default",
       "Desk Camera",
     ]);
+    for (const select of [microphoneSelect, cameraSelect]) {
+      expect(select.closest(".settings-row")?.querySelector("button")).toBeNull();
+    }
     expect(container.textContent).toContain("Hold microphone button to start dictation");
 
     microphoneSelect.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0 }));

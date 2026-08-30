@@ -1,5 +1,6 @@
 import { readSessionMessageSequence } from "@openclaw/gateway-client/browser";
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
+import type { ChatPendingInputsPage } from "../../../../packages/gateway-protocol/src/schema/logs-chat.js";
 import { GatewayRequestError, type GatewayBrowserClient } from "../../api/gateway.ts";
 import type {
   AgentsListResult,
@@ -32,10 +33,10 @@ import {
 import {
   areUiSessionKeysEquivalent,
   isUiSelectedGlobalSessionKey,
+  uiConversationMatches,
   isUiGlobalSessionKey,
   normalizeAgentId,
   parseAgentSessionKey,
-  resolveUiDefaultAgentId,
   resolveUiGlobalAliasAgentId,
   resolveUiSelectedGlobalAgentId,
   resolveUiSelectedSessionAgentId,
@@ -47,7 +48,8 @@ import {
   resolveStartupRetryDelayMs,
   sleep,
 } from "./chat-history-retry.ts";
-import type { ChatRunStartupPhase } from "./chat-run-startup.ts";
+import { applyChatPendingInputs, clearChatPendingInputs } from "./chat-pending-inputs.ts";
+import { reconcileChatRunStartup, type ChatRunStartupPhase } from "./chat-run-startup.ts";
 import type { ChatState } from "./chat-state-contract.ts";
 import { persistChatComposerState } from "./composer-persistence.ts";
 import {
@@ -102,11 +104,11 @@ import { handleAgentEvent } from "./tool-stream.ts";
 const SILENT_REPLY_PATTERN = /^\s*NO_REPLY\s*$/;
 const SYNTHETIC_TRANSCRIPT_REPAIR_RESULT =
   "[openclaw] missing tool result in session history; inserted synthetic error result for transcript repair.";
-export const CHAT_HISTORY_REQUEST_LIMIT = 100;
+export const CHAT_HISTORY_REQUEST_LIMIT = 400;
 // Back-scroll pages are larger than the startup tail: session open stays cheap
 // while older-history reads amortize round trips and prepend/re-anchor cycles.
 // The gateway independently bounds each response (entry cap + byte budget).
-const CHAT_HISTORY_OLDER_PAGE_LIMIT = 400;
+const CHAT_HISTORY_OLDER_PAGE_LIMIT = 1000;
 const STARTUP_CHAT_HISTORY_RETRY_TIMEOUT_MS = 60_000;
 const SESSION_MESSAGE_RELEASE_RETRY_MS = 250;
 const MAX_SESSION_MESSAGE_RELEASE_ATTEMPTS = 3;
@@ -196,6 +198,10 @@ export function retireChatBranchRequests(state: ChatState): void {
   getChatHistoryPaneRequests(state).branchVersion += 1;
 }
 
+export function getChatHistoryVersion(state: ChatState): number {
+  return getChatHistoryPaneRequests(state).historyVersion;
+}
+
 type ChatHistoryRequestOwnership = {
   version: number;
   client: GatewayBrowserClient;
@@ -242,6 +248,7 @@ function shouldApplyChatHistoryResult(
 }
 
 export function resetChatHistoryProjection(state: ChatState, agentId?: string): void {
+  clearChatPendingInputs(state);
   const requests = getChatHistoryPaneRequests(state);
   // A destructive reset keeps the session key, so invalidate both the old
   // snapshot owner and its coalesced request before creating the next epoch.
@@ -348,6 +355,7 @@ type ChatSessionMessageSubscriptionState = ChatState & {
 };
 
 export type ChatHistoryResult = {
+  pendingInputs?: ChatPendingInputsPage;
   sourceCanonicalListRevision?: number;
   deltaCursor?: string;
   messages?: Array<unknown>;
@@ -381,6 +389,7 @@ export type ChatHistoryResult = {
 };
 
 type ChatHistoryDeltaResult = {
+  pendingInputs?: ChatPendingInputsPage;
   kind: "delta";
   messages: unknown[];
   deltaCursor: string;
@@ -616,7 +625,10 @@ function applyHistoryRunSnapshot(params: {
       },
     ];
   }
-  const startupPhase = run.events?.findLast((event) => event.stream === "run_status")?.data.phase;
+  const startup = run.events?.findLast(
+    (event) => event.runId === inFlightRunId && event.stream === "run_status",
+  );
+  const startupPhase = startup?.data.phase;
   const hasStartupStatus =
     startupPhase === "preparing_workspace" ||
     startupPhase === "naming_worktree" ||
@@ -625,10 +637,16 @@ function applyHistoryRunSnapshot(params: {
     startupPhase === "provisioning_environment" ||
     startupPhase === "preparing_context" ||
     startupPhase === "starting_model";
-  state.chatRunStartup =
-    hasStartupStatus && !tail && !(sameRunContinued && state.chatRunStartup?.state === "activity")
-      ? { state: "status", runId: inFlightRunId, phase: startupPhase }
-      : { state: "activity", runId: inFlightRunId };
+  if (run.text) {
+    reconcileChatRunStartup(state, { state: "activity", runId: inFlightRunId });
+  } else if (startup && hasStartupStatus) {
+    reconcileChatRunStartup(state, {
+      state: "status",
+      runId: inFlightRunId,
+      phase: startupPhase,
+      seq: startup.seq,
+    });
+  }
   // Disconnect cleanup intentionally removes transient activity rows while
   // retaining the owned run. Replay fills that gap; per-identity sequence
   // fences keep a delayed snapshot from replacing newer live progress.
@@ -735,6 +753,7 @@ function reconcileLoadedHistoryTail(options: {
 
 export type ChatEventPayload = {
   runId?: string;
+  seq?: number;
   sessionKey: string;
   agentId?: string;
   state: "status" | "delta" | "final" | "aborted" | "error";
@@ -753,35 +772,12 @@ function setChatError(state: ChatState, error: string | null) {
   state.chatError = message;
 }
 
-function chatScopedEventAgentScopeMatches(
-  state: ChatState,
-  sessionKey: string,
-  agentId?: string | null,
-): boolean {
-  if (!isUiSelectedGlobalSessionKey(state, state.sessionKey) || !isUiGlobalSessionKey(sessionKey)) {
-    return true;
-  }
-  const payloadAgentId =
-    typeof agentId === "string" && agentId.trim() ? normalizeAgentId(agentId) : undefined;
-  const selectedAgentId = resolveUiSelectedSessionAgentId(state);
-  return payloadAgentId
-    ? selectedAgentId !== undefined && payloadAgentId === selectedAgentId
-    : selectedAgentId === undefined || selectedAgentId === resolveUiDefaultAgentId(state);
-}
-
 export function chatScopedEventSessionMatches(
   state: ChatState,
   sessionKey: string,
   agentId?: string | null,
 ): boolean {
-  if (areUiSessionKeysEquivalent(sessionKey, state.sessionKey)) {
-    return chatScopedEventAgentScopeMatches(state, sessionKey, agentId);
-  }
-  return (
-    isUiGlobalSessionKey(sessionKey) &&
-    isUiSelectedGlobalSessionKey(state, state.sessionKey) &&
-    chatScopedEventAgentScopeMatches(state, sessionKey, agentId)
-  );
+  return uiConversationMatches(state, state.sessionKey, sessionKey, agentId);
 }
 
 function normalizeSubscriptionKey(value: string | null | undefined): string | null {
@@ -793,11 +789,7 @@ function resolveSelectedGlobalAliasAgentId(
   state: ChatSessionMessageSubscriptionState,
   key: string | null | undefined,
 ): string | null {
-  const row = state.sessionsResult?.sessions.find((session) => session.key === key);
-  return resolveUiGlobalAliasAgentId(state, key, {
-    rowKind: row?.kind,
-    requireGlobalRowForMainAlias: true,
-  });
+  return resolveUiGlobalAliasAgentId(state, key);
 }
 
 function resolveSelectedGlobalAgentId(state: ChatSessionMessageSubscriptionState): string {
@@ -2006,6 +1998,7 @@ async function loadChatHistoryUncached(
         state.chatDisplayedLeafEntryId = response.sessionInfo.activeLeafEntryId?.trim() || null;
       }
       state.currentSessionId = response.sessionInfo.sessionId?.trim() || previousSessionId;
+      applyChatPendingInputs(state, response.pendingInputs);
       // An accepted delta advances the same transcript generation, not a branch replacement.
       // Carry ownership across its leaf advance; reseeding loses attributed pending sends and runs.
       setChatSessionProjection(state, {
@@ -2037,6 +2030,7 @@ async function loadChatHistoryUncached(
       return {
         messages: state.chatMessages,
         deltaCursor: response.deltaCursor,
+        pendingInputs: response.pendingInputs,
         sessionInfo: response.sessionInfo,
         ...(response.inFlightRun ? { inFlightRun: response.inFlightRun } : {}),
         ...(response.metadata ? { metadata: response.metadata } : {}),
@@ -2110,6 +2104,7 @@ async function loadChatHistoryUncached(
     }
     state.chatHistoryPagination = reconciledHistory?.pagination ?? nextPagination;
     state.currentSessionId = nextSessionId;
+    applyChatPendingInputs(state, res.pendingInputs);
     commitCurrentChatHistorySnapshot(state, res.deltaCursor ?? null);
     if (
       state.reconnectResumeSessionId &&
@@ -2138,7 +2133,7 @@ async function loadChatHistoryUncached(
       pruneHistoryReplacedStreamSegments(state.chatMessages, state, streamReconciliation);
       const liveToolIds = currentLiveToolCallIds(state);
       if (state.chatRunId && (hasVisibleStream || liveToolIds.length > 0)) {
-        state.chatRunStartup = { state: "activity", runId: state.chatRunId };
+        reconcileChatRunStartup(state, { state: "activity", runId: state.chatRunId });
       }
       const persistedToolStreamIds = persistedCurrentToolStreamIds(state.chatMessages, state);
       const historyReplacedToolStream =
