@@ -528,7 +528,10 @@ export const en: TranslationMap & {
       waitingForIdle: "Waiting for active work",
     },
     dialog: {
-      restarting: "The Gateway is restarting. This page disconnects and reconnects on its own.",
+      disconnected:
+        "The Gateway disconnected during the update. This page reconnects on its own. If it stays disconnected, run `openclaw triage` on the Gateway host to open a local coding agent for diagnosis and repair.",
+      restarting:
+        "The Gateway is restarting. This page disconnects and reconnects on its own. If it stays disconnected, run `openclaw triage` on the Gateway host to open a local coding agent for diagnosis and repair.",
     },
     channel: {},
     installKind: {},
@@ -545,7 +548,7 @@ export const en: TranslationMap & {
       "The update outcome is unknown. Run `openclaw triage` on the Gateway host and inspect the result before retrying.",
     triage: {
       hostHint:
-        "If Ask OpenClaw is unavailable, run `openclaw triage` on the Gateway host. Diagnose the cause before retrying.",
+        "If Ask OpenClaw is unavailable, run `openclaw triage` on the Gateway host to open a local coding agent for diagnosis and repair. Diagnose the cause before retrying.",
     },
     failureReasons: {
       dirty: "Commit or stash changes, then retry.",
@@ -913,10 +916,25 @@ export const en: TranslationMap & {
     draft: "Draft",
     draftDescription: "Keep this session to yourself until you publish it",
     messagePlaceholder: "What should this session work on?",
+    titlePreparationDisclosure:
+      "When you pause, draft text is sent to your title provider to prepare a session name. Not used in incognito.",
+    preparedTitle: "Session name: {title}",
     dictate: "Dictate",
     readingAttachment: "Reading attachment",
     start: "Start session",
     startInTerminal: "Start in terminal",
+    nativeTerminalHint:
+      "Start the native CLI on the selected machine using its own account and configuration. This does not create an OpenClaw Chat.",
+    chooseNativeHost: "Choose a native CLI host",
+    nativeTerminalPrompt: "Optional initial prompt for the native CLI",
+    terminalNodeFolder: "Existing absolute folder on this node",
+    terminalHostUnavailable:
+      "Native CLI host unavailable. Check that the CLI is installed and the node is connected with its fresh-start command approved, then retry the catalog.",
+    terminalDisabled: "Enable CLI agents and terminals in Gateway settings to start a native CLI.",
+    terminalAttachmentsUnsupported:
+      "Remove attachments before starting a native CLI. Add files from the terminal after it opens.",
+    terminalPlacementUnsupported:
+      "Native CLI sessions use a specific host, not OpenClaw worker placement. Reset this draft and choose a native host.",
     starting: "Starting…",
     createFailed: "Couldn't create the session.",
     createOutcomeUnknown:
@@ -985,7 +1003,7 @@ export const en: TranslationMap & {
     ownerYou: "{name} (You)",
     withParticipant: "with {name}",
     withMoreParticipants: "+{count} more",
-    assignToMe: "Assign to me",
+    assignToMe: "Me",
     assignTo: "Assign to…",
     filterControls: "Session filters",
     filters: "Filters",
@@ -1222,7 +1240,7 @@ export const en: TranslationMap & {
     groupByDate: "Date",
     group: "Group",
     ungrouped: "Ungrouped",
-    newGroup: "New group…",
+    newGroup: "New group",
     newGroupPrompt: "New group name",
     newGroupTitle: "New group",
     newGroupCreate: "Create group",
@@ -1237,7 +1255,7 @@ export const en: TranslationMap & {
     moveBackToGroups: "Move back to Groups",
     groupMenu: "Group options for {group}",
     newSessionInGroup: "New session in {group}",
-    groupDefaultsMenu: "New session defaults…",
+    groupDefaultsMenu: "New session defaults",
     groupDefaultsTitle: 'New session defaults for "{group}"',
     groupDefaultsDescription: "Choose where new sessions in this group start.",
     groupDefaultsCwd: "Working directory",
@@ -1249,10 +1267,10 @@ export const en: TranslationMap & {
     groupDefaultsWorktreeHint: "Runs each session in an isolated Git worktree.",
     groupDefaultsFailed: "Could not save the group defaults.",
     groupDefaultsStale: "Gateway connection replaced before the defaults were saved. Try again.",
-    renameGroupMenu: "Rename group…",
+    renameGroupMenu: "Rename group",
     renameGroupTitle: 'Rename group "{group}"',
     groupNameLabel: "Group name",
-    deleteGroupMenu: "Delete group…",
+    deleteGroupMenu: "Delete group",
     deleteGroupTitle: 'Delete group "{group}"',
     deleteGroupConfirm: "The group is removed. Its sessions move back to the session list.",
     deleteGroupStale: 'Gateway connection replaced before "{group}" was deleted. Try again.',
@@ -3093,6 +3111,8 @@ export const en: TranslationMap & {
     tryAgain: "Try again",
     loading: "Loading plugins…",
     searching: "Searching ClawHub…",
+    searchResultCountOne: "{count} result",
+    searchResultCount: "{count} results",
     fromClawHub: "From ClawHub",
     noClawHubResultsBody: "ClawHub has no results for “{query}”.",
     noDiscoverMatchTitle: "Nothing to discover matches",
@@ -4159,6 +4179,8 @@ export const en: TranslationMap & {
     queuedCount: "{count} queued",
     reconnecting: "Reconnecting…",
     restarting: "Restarting…",
+    suspending: "Suspending…",
+    suspended: "Suspended",
     retryNow: "Retry now",
     actionsUnavailable: "Actions are unavailable while the Gateway reconnects.",
     settingsChangesUnavailable:
@@ -5014,6 +5036,15 @@ export const en: TranslationMap & {
         stepAdmin:
           "If this continues, ask a Gateway administrator to check the identity provider and GitHub API credential.",
       },
+      verifiedUserRequired: {
+        title: "Verified identity required",
+        summary:
+          "This Gateway has named roles enabled. Device and setup tokens cannot identify a person.",
+        stepIdentity:
+          "Reconnect through the trusted proxy or Tailscale so the Gateway can verify your identity.",
+        stepSharedSecret:
+          "For trusted local operator access, use the shared Gateway token or password.",
+      },
       authRequired: {
         title: "Auth required",
         summary:
@@ -5034,6 +5065,16 @@ export const en: TranslationMap & {
           "Replace stale token/password values; do not reuse a token from another Gateway URL.",
         stepMode:
           "Use one matching auth mode at a time: gateway token for token mode, password for password mode.",
+      },
+      trustedProxy: {
+        title: "Proxy authentication required",
+        summary:
+          "The Gateway is reachable, but it rejected the proxy identity or forwarding information.",
+        stepSignIn:
+          "Open the configured authenticated proxy or SSO dashboard URL and sign in there, rather than visiting the Gateway directly.",
+        stepHeaders:
+          "Ask the Gateway administrator to check for missing identity headers and required-header forwarding on WebSocket upgrade requests, and confirm your account is permitted.",
+        stepNoToken: "A Gateway token cannot replace proxy authentication.",
       },
       rateLimited: {
         title: "Too many failed attempts",
@@ -5102,6 +5143,7 @@ export const en: TranslationMap & {
   chat: {
     cloudWorkerFailed: "Runner failed: {error}",
     errorDetails: "Error details",
+    details: "Details",
     copyError: "Copy error",
     diskSpace: {
       warningTitle: "Cloud session disk space is low",
@@ -5798,11 +5840,11 @@ export const en: TranslationMap & {
       fastMode: "Fast mode",
       searchModels: "Search models",
       noMatchingModels: "No models match your search",
-      onlyForSession: "Only for this session",
-      selectionTargetSession: "Selection target: This session only",
-      selectionTargetAgent: "Selection target: This agent's default",
-      selectionTargetGlobal: "Selection target: Global default",
-      useDefaultModel: "Use default ({model})",
+      selectionTargetSession: "This session",
+      selectionTargetAgent: "Agent default",
+      selectionTargetGlobal: "Global default",
+      resetSessionModel: "Reset session model",
+      useDefaultModel: "Use default ({model}) for this session",
       defaultWithModel: "Default ({model})",
       defaultWithLevel: "Default ({level})",
       fastHelp: "Faster responses, higher usage of limits.",
@@ -5824,12 +5866,12 @@ export const en: TranslationMap & {
     permissionControls: {
       label: "Permissions",
       help: "Choose permissions for this session.",
-      applying: "Applying permissions…",
       default: "Default",
       defaultDescription: "Follow the agent's configured policy.",
       defaultWithMode: "Default ({mode})",
       fullRequiresAdmin: "Full access requires operator.admin access.",
       updateFailed: "Failed to update permissions: {error}",
+      refreshFailed: "Permissions were saved, but refreshing the session failed: {error}",
       modes: {
         "read-only": {
           label: "Read Only",
@@ -5961,7 +6003,6 @@ export const en: TranslationMap & {
       noMatches: "No matching messages",
     },
     pendingInputs: {
-      queued: "Message received. Waiting for the agent to start it.",
       cancelled:
         "Cancelled before the agent started it. It will not run automatically; copy it and send again.",
       interrupted:
@@ -5975,6 +6016,7 @@ export const en: TranslationMap & {
       badge: "Expired",
     },
     composer: {
+      composerInput: "Chat composer",
       placeholder: "Message {name}",
       emptyHint: "Write a message to send.",
       placeholderWithAttachments: "Add a message or paste more images...",
