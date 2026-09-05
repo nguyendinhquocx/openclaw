@@ -9,7 +9,6 @@ import {
   collectPluginDeclarationSourceEntries,
   collectSourceCheckoutPluginBuildEntries,
 } from "./scripts/lib/bundled-plugin-build-entries.mjs";
-import { createClaudeAgentSdkAssetPlugin } from "./scripts/lib/claude-agent-sdk-assets.mts";
 import {
   buildPluginSdkEntrySources,
   pluginSdkEntrypoints,
@@ -188,6 +187,7 @@ function workerDeployBuildConfig(): UserConfig {
     env,
     define: {
       WORKER_DEPLOY_BUILD: "true",
+      SEALED_RUNTIME_BUILD: "true",
       WORKER_DEPLOY_VERSION: JSON.stringify(workerDeployVersion),
     },
     alias: {
@@ -344,9 +344,7 @@ function shouldNeverBundleDeclarationDependency(id: string): boolean {
   // Arrow's relative module augmentations must stay beside their package modules.
   return (
     shouldNeverBundleDependency(id) ||
-    ["@anthropic-ai/claude-agent-sdk", "zod", "apache-arrow"].some(
-      (name) => id === name || id.startsWith(`${name}/`),
-    )
+    ["zod", "apache-arrow"].some((name) => id === name || id.startsWith(`${name}/`))
   );
 }
 
@@ -410,6 +408,7 @@ function buildCoreDistEntries(): Record<string, string> {
     "agents/compaction-planning.worker": "src/agents/compaction-planning.worker.ts",
     "config/sessions/session-model-context.worker":
       "src/config/sessions/session-model-context.worker.ts",
+    "config/sessions/disk-budget.worker": "src/config/sessions/disk-budget.worker.ts",
     "agents/model-provider-auth.worker": "src/agents/model-provider-auth.worker.ts",
     "agents/prepared-model-catalog.worker": "src/agents/prepared-model-catalog.worker.ts",
     ...runtimeProcessBuildEntries,
@@ -812,7 +811,7 @@ const configs = [
       // and bundled hooks in one graph so runtime singletons are emitted once.
       entry: unifiedDistEntries,
       deps: unifiedDeps,
-      plugins: [createClaudeAgentSdkAssetPlugin(), createStateSchemaInlinePlugin()],
+      plugins: [createStateSchemaInlinePlugin()],
     },
     false,
   ),

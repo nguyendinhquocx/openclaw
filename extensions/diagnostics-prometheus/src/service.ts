@@ -1,6 +1,7 @@
 // Diagnostics Prometheus plugin module implements service behavior.
 import type { IncomingMessage, ServerResponse } from "node:http";
 import {
+  isDiagnosticsEnabled,
   normalizeDiagnosticValue,
   normalizeDiagnosticLane,
 } from "openclaw/plugin-sdk/diagnostic-runtime";
@@ -964,7 +965,7 @@ function recordDiagnosticEvent(
       );
       store.histogram(
         "openclaw_liveness_cpu_core_ratio",
-        "CPU core ratio reported by diagnostic liveness warnings.",
+        "Whole-process CPU usage in core equivalents, including worker and native threads; can exceed 1.",
         livenessLabels(evt),
         numericValue(evt.cpuCoreRatio),
         RATIO_BUCKETS,
@@ -1094,6 +1095,21 @@ export function createDiagnosticsPrometheusExporter() {
       if (!subscribe) {
         ctx.logger.error("diagnostics-prometheus: internal diagnostics capability unavailable");
         return;
+      }
+      const identity = isDiagnosticsEnabled(ctx.config)
+        ? ctx.internalDiagnostics?.getRuntimeIdentity?.()
+        : undefined;
+      if (identity) {
+        // Reserve one sample before event traffic; runtime identity must survive saturation.
+        store.gauge(
+          "openclaw_gateway_build_info",
+          "Identity of the hosting process and its loaded build; not a health or exporter epoch.",
+          {
+            process_instance_id: identity.processInstanceId,
+            ...(identity.buildId ? { build_id: identity.buildId } : {}),
+          },
+          1,
+        );
       }
       unsubscribe = subscribe((event, metadata) => {
         try {
