@@ -20,6 +20,26 @@ OpenClaw stores control-plane state in a global SQLite database and agent data i
 
 The task registry uses the global control-plane database. Runtime trajectory events live with their sessions in the per-agent database or a configured shared session SQLite store.
 
+### Plugin state listing index
+
+Plugin keyed stores use the shared `plugin_state_entries` table. Its listing
+index includes `expires_at` after the existing plugin, namespace, creation-time,
+and entry-key columns, so live-row counts can read the index without fetching
+stored values. Quotas, TTL cutoffs, ordering, and row contents are unchanged.
+
+Writable startup and `openclaw doctor --fix` replace the older four-column
+definition through canonical index repair, without a schema-version bump. The
+repair builds temporary indexes and runs the existing table and full-file
+integrity checks; allow for extra disk space and work proportional to stored
+entries during the first repair.
+
+An older build can rebuild the same index back to its expected definition.
+Full-schema read-only validation rejects a mismatched definition until a
+writable owner repairs it; lightweight readers that validate only the numeric
+schema version may read either shape. See the
+[accepted index design](https://github.com/openclaw/openclaw/issues/142244) for
+upgrade, reverse-repair, and performance proof requirements.
+
 ### Mentions Inbox
 
 The [mentions Inbox](/concepts/multi-user#temporary-mentions-inbox) uses existing
@@ -145,6 +165,77 @@ downtime. Each JSON column has a 16 KiB hard limit with deterministic truncation
 and redaction. The ledger stores bounded diagnostic summaries, not raw logs or
 credentials. There is no automatic history deletion.
 
+New drivers store optional `origin.driver` fields `host` (the hostname), `pid`,
+and `startIdentity` (the operating system's process-start identity as a decimal
+string) in the existing `origin_json` column. Each adopter becomes the current
+driver and retains distinct earlier identities in `origin.previousDrivers`.
+There are at most eight identities in total. Only positively dead identities
+are pruned; adoption is refused rather than dropping a live or uninspectable
+driver at capacity. If local process identity cannot be captured, adoption
+continues with one warning and a retained `driver:identity-unavailable` step.
+That marker permanently excludes the run from automatic reconciliation, even
+if known parents later exit; existing recorded identities remain protected.
+A fresh run without identity follows the legacy explicit repair/supersession
+rules below.
+This is additive JSON metadata;
+there are no new columns, tables, or schema versions. The separate
+`verification.pid` still identifies the Gateway service, not the updater.
+Adoption records a retained `driver:adopted` step. Detached children can outlive
+their parent, so either lifetime can prevent reconciliation. Adopting a terminal
+run is refused. Long command and finalization phases renew `updated_at_ms`
+every 30 seconds; only current or retained identities may renew a row. Heartbeat
+write failures warn once per driver run and do not abort commands or finalization;
+step and outcome writes retain their existing failure behavior. Encoding
+reserves space for exact identity bytes before bounding and redacting other
+origin diagnostics.
+
+The ledger owns abandonment classification and terminalization. Automatic
+recovery requires more than 30 minutes since both `updated_at_ms` and the latest
+step timestamp, plus positive evidence that every recorded driver is dead on the
+same host: its PID is gone or its process-start identity differs. Unreadable and
+foreign-host identities are inconclusive. The Gateway performs reconciliation
+at startup and on active-run polls, rechecking the current row and process
+identity in the terminal write transaction. The shared 30-minute constant also
+owns the older-updater schema-publication bound below.
+
+Reconciliation writes status `failed`, reason `abandoned`, and a retained
+`reconcile:abandoned` step whose detail names `inactive-driver-dead` or
+`operator-reconciled-inactive-run`. All unfinished steps become terminal, and
+history is retained. Explicit `update repair` can reconcile inactive identityless
+rows when the current Gateway generation is healthy and no post-core repair is
+pending. It cannot override a live or inconclusive recorded driver. The
+[2026.9.2 updater](https://github.com/openclaw/openclaw/blob/v2026.9.2/src/cli/update-cli/update-command.ts#L465)
+does not record adoption: package-manager and registry preflight can
+leave a live updater at its single `requested/in_progress` step. Older writers
+may drop unknown driver JSON fields; identityless rows require explicit recovery.
+`update status` only reports classification and never commits reconciliation.
+
+Explicit new CLI update admission can supersede a legacy row only when it is
+the sole running row, has no current or previous driver identity, and exceeds
+the same inactivity bound. The transaction finishes it as `failed` with reason
+`superseded` and a retained `reconcile:superseded` step whose detail is
+`operator-started-update-supersedes-inactive-identityless-run`, then creates the
+new row. This includes dry-run admission, but excludes inherited continuations
+and campaigns. `abandoned` and `superseded` are additive values in the existing
+free-text reason contract. Neither recovery path deletes history.
+
+Successful ledger-only repair records a retained `reconcile:acknowledged` step.
+A terminal abandoned row can substitute for full repair only once, within
+30 minutes of its finish time; later repair invocations keep normal plugin
+convergence behavior.
+Repair also inspects newer failed/abandoned history for unacknowledged post-core
+work, regardless of its age. An older active row cannot hide that work. If the
+bounded history prefix does not reach the selected recovery rows, repair uses
+full finalization rather than claiming that no post-core work remains.
+When full finalization is required, the selected inactive rows are rechecked
+and reconciled only after successful convergence, before success output.
+Explicit recovery validates and commits its selected rows in one transaction;
+renewed activity in any selected run preserves the entire selection. Ledger-only
+repair also refuses the write if another active run falls outside that selection.
+Finalization (`finalize:*`) and post-update verification markers survive step-count
+and diagnostic-byte eviction because repair relies on that history. If retained
+metadata alone exceeds a hard limit, the write fails without changing the row.
+
 The CLI and Gateway share WAL-backed transactions, including while the Gateway
 is stopped. The first terminal outcome wins; subsequent verification can enrich
 its observed facts without rewriting success, failure, skip, or rollback status.
@@ -187,12 +278,16 @@ already validate the optional pending-input table may reject the added column
 despite sharing version 19. Consumed source receipts remain until their session
 window is deleted, so rewriting a transcript cannot make an old input runnable again.
 
-The placement-move table uses this same-version rule for its nullable bare
-`abandon_source INTEGER` column. The feature lazily ensures the column on first
-move use. `NULL` means ordinary reconcile-first movement; `1` records the
-operator's explicit offline-device abandonment decision so restart recovery
-cannot accidentally resume remote reconciliation. Older readers ignore the
-column and can reopen the same database safely.
+The placement-move table uses this same-version rule for its bare nullable
+`abandon_source INTEGER`, `target_machine_class TEXT`, and `target_os TEXT`
+columns. The feature ensures these columns only on first move use; database
+startup does not add them, and the schema version remains unchanged.
+`target_machine_class` and `target_os` retain explicit profile-target overrides;
+`NULL` means no override. For `abandon_source`, `NULL` means ordinary
+reconcile-first movement; `1` records the operator's explicit offline-device
+abandonment decision so restart recovery cannot accidentally resume remote
+reconciliation. Older readers ignore the added columns and can reopen the same
+database safely; they do not implement the newer operating-system override.
 
 Conversation associations use the same rule for the nullable bare
 `route_context_json TEXT` column. The database-open repair ensures the column
@@ -475,6 +570,14 @@ session writes can continue during those checks. It reacquires the writer and
 revalidates current authority before index repair, schema work, or deletion.
 The connection and lease remain owned throughout admission; refusal unwinds that
 owner, and final writer admission remains held until the worker exits.
+
+Disk-budget cleanup rechecks protection after archive materialization. A candidate
+already excluded by that fresh protection set is canceled before worker admission
+and is not counted as reclaimed. After releasing its lifecycle holds, cleanup
+remeasures physical usage before considering another candidate, so space freed by
+a peer does not cause unnecessary eviction. Every admitted worker still performs
+the full integrity, foreign-key, and current-owner checks described here.
+
 Archive publication and cascading deletion remain atomic. Before COMMIT, the
 worker publishes its authorization request in shared memory and waits for the
 parent's current owner check. Synchronous writers service that request at the shared
@@ -577,6 +680,8 @@ The command does not read the default state directory or mutate the supplied fil
 JSON output is identified by `schema: "openclaw.state-schema-preflight.v1"`.
 
 Use a SQLite online backup or another WAL-aware snapshot produced while the source is safely coordinated. The resulting preflight input must be one consolidated file with no sibling `-wal`, `-shm`, or `-journal`; sidecars make the result `indeterminate`. Do not copy only the main `.sqlite` file from an active WAL database. Preflight the exact runtime that will be activated; a package version or numeric schema version alone does not prove same-version shape compatibility.
+
+Diagnostic paths that prepare their own private read-only snapshots use the size-derived child-process budget described under [Integrity checks](/reference/database-schemas#integrity-checks).
 
 ## Agent schema history
 
@@ -724,7 +829,23 @@ Background verification errors retain the original name and message and append b
 
 Agent database maintenance fences other writers with a 60-second lease in the shared state database. A dedicated worker renews that lease during synchronous integrity scans and migration phases. Maintenance still checks the exact persisted owner before mutations and commit, and stops if the heartbeat fails or ownership expires or changes. Finishing or cancelling maintenance stops renewal before releasing the lease; process death leaves at most the remaining lease duration.
 
-Maintenance schema admission runs its initial full-file integrity check in a read-only child process when that check is outside a write transaction. The scan has a 30-second execution limit; the connection and maintenance lease remain held until the child process closes, including on cancellation or timeout. Schema changes, index repairs, and compaction retain their synchronous phases.
+Asynchronous agent-database admission and maintenance run their initial full-file integrity check in a read-only child process when that check is outside a write transaction. The connection and owning scope remain held until the child closes, including on cancellation or timeout. Schema changes, index repairs, and compaction retain their synchronous phases.
+
+The integrity child and both asynchronous and synchronous read-only snapshot workers share a lifetime budget: 30 seconds for startup and shutdown plus one second per 32 MiB of source database file size, rounded up, capped at 30 minutes. A full copy or full scan reads the whole file at least once; the budget allows for a conservative cold-cache read rate of 32 MiB/s. A 9.4 GiB database gets 331 seconds. Budgets above 30 seconds are logged once per call at debug level with the operation, path, size, and applied budget, keeping ordinary CLI output quiet. If the snapshot worker cannot stat the source, it uses the 30-second base budget and lets the child report the underlying error.
+
+The synchronous byte-neutral snapshot strategy is for small or quiescent databases. Inspections of a live agent database, including memory-core readiness, use the asynchronous online-backup worker.
+
+Integrity-child timeout and incomplete-exit errors include `lastObservedPhase`:
+
+| Value             | Last observation                                                                          |
+| ----------------- | ----------------------------------------------------------------------------------------- |
+| `starting`        | The parent has not received a child phase.                                                |
+| `opening`         | The child announced file-identity checks and opening a read-only connection.              |
+| `checking`        | The connection opened, and the child announced the full integrity and foreign-key checks. |
+| `closing`         | The child announced connection cleanup after checking or an error.                        |
+| `result-received` | The parent received a final result and is waiting for child closure.                      |
+
+These phases describe messages the parent received, not the child's exact current location or native CPU time. `checking` does not distinguish the integrity check from the foreign-key check. A final result can report failure; phase messages never establish successful validation or release ownership.
 
 Startup errors containing `state lease heartbeat did not become ready` include `phase=startup`, the settlement trigger (`timeout` or `message`), and the status observed before the parent marks failure. `status=starting` distinguishes readiness still pending from `status=lost`, where loss was already recorded. `elapsedMs` measures monotonic time since heartbeat startup began; `timeoutMs` is the startup wait budget, capped at five seconds or the remaining initial lease lifetime. These fields do not establish why startup stalled or ownership was lost.
 
@@ -732,7 +853,7 @@ The heartbeat proves ownership, not migration progress. A live but stuck mainten
 
 ## Troubleshooting
 
-`SQLite read-only worker` failures append `code` and numeric SQLite `errcode` diagnostics when the underlying error supplies valid values, including through a bounded cause chain. Report the full code suffix when investigating a failure. A generic `disk I/O error` or `SQLITE_IOERR` alone does not prove the disk is full.
+`SQLite read-only worker` failures append `code` and numeric SQLite `errcode` diagnostics when the underlying error supplies valid values, including through a bounded cause chain. Report the full code suffix when investigating a failure. Snapshot and integrity-child timeout errors include the applied budget and source file size; snapshot timeouts report an unknown size if the source stat failed. Integrity-child timeouts also retain `lastObservedPhase`. A generic `disk I/O error` or `SQLITE_IOERR` alone does not prove the disk is full.
 
 ### Why you cannot go back after updating to 2026.7.2
 
