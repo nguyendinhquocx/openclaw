@@ -592,8 +592,9 @@ export async function listSessionsFromStoreAsync(
       const includeTranscriptFields = i < list.transcriptFieldRows;
       const row = buildGatewaySessionRow({
         cfg,
-        storePath: target.storeKey ? target.storeTarget.storePath : list.storePath,
+        storePath: target.storeTarget.storePath, // Aggregate paths are display-only.
         store,
+        modelSource: target.modelSource,
         key: target.storeKey ?? key,
         entry,
         agentId: target.agentId,

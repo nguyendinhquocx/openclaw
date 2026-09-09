@@ -60,15 +60,28 @@ internal turns suppress project-doc loading and that fallback carrier.
 
 OpenClaw developer instructions cover OpenClaw runtime concerns: source-channel
 delivery, OpenClaw dynamic tools, ACP delegation, adapter context, and the
-active agent workspace profile files. Skill catalogs and tool-routed
-`MEMORY.md` pointers are projected as turn-scoped collaboration developer
-instructions. Active `BOOTSTRAP.md` and, when memory tools are unavailable,
+active agent workspace profile files. With the OpenClaw-managed bundled stdio
+app-server using standard OpenAI endpoints, skill catalogs, persona files, and tool-routed `MEMORY.md` guidance
+are appended to the parent model request instructions by a private inference
+relay. Native base and catalog instructions remain unchanged; this new context
+is not written to native conversation history or automatically inherited by
+native subagents. Active `BOOTSTRAP.md` and, when memory tools are unavailable,
 bounded `MEMORY.md` content travel as plain turn input references. They are
 introduced on a new native thread, after a cold resume or native compaction,
 and when their rendered content changes. Consecutive warm turns omit unchanged
 references once the complete block has been submitted. References dropped or
 truncated by prompt fitting are introduced again on a later turn. Process-local
 tracking resets when the Gateway restarts.
+
+Custom commands, Desktop attachments, external Unix/WebSocket app-server
+connections, non-OpenAI native providers, custom upstream endpoints, unsupported
+native accounts, locked upstreams, and native `features.respect_system_proxy` profiles retain their existing
+collaboration carrier. Managed relay requests use the Gateway's HTTP(S) proxy
+and TLS configuration instead of changing native networking settings. OpenClaw reports that
+the parent-local workaround is unavailable there rather than replacing another
+application's live configuration. Existing history, including any older embedded
+persona or explicitly shared task text, is preserved; this is not a retroactive
+history scrub. See [Workspace bootstrap files](/plugins/codex-harness-reference#workspace-bootstrap-files).
 
 Delivery mode and the current message target requirement arrive as compact
 application context before each user turn. They explicitly supersede earlier
@@ -243,6 +256,14 @@ request metadata. The existing environment, dynamic-tool, MCP, and native-hook
 restrictions remain. Completed actions are transcript evidence, not instructions
 to replay. Preserving a native model does not, by itself, disable host-authenticated
 finalization.
+
+Recovery reserves its existing limits for the complete current turn, then keeps
+the nearest whole earlier exchanges that fit. Older exchanges can be omitted,
+including a whole exchange that is too large. A notice identifies missing history
+when space permits; the finalizer is always instructed to state uncertainty about
+missing facts. Current evidence that exceeds the limits, invalid tool pairs, or
+unsupported content still makes recovery unavailable. Existing conversation
+history stays intact, and completed actions are never repeated.
 
 A Chat created through Codex Sessions is different: its private supervision
 connection owns native authentication. Stock Codex does not expose a generic
@@ -618,5 +639,6 @@ path even if the Codex turn has no assistant text.
 - [Native Codex plugins](/plugins/codex-native-plugins)
 - [Plugin hooks](/plugins/hooks)
 - [Agent harness plugins](/plugins/sdk-agent-harness)
+- [Agent runtimes](/concepts/agent-runtimes)
 - [Diagnostics export](/gateway/diagnostics)
 - [Trajectory export](/tools/trajectory)
