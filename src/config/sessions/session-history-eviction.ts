@@ -19,7 +19,10 @@ import {
 } from "./disk-budget.js";
 import { publishSessionStateArchives } from "./session-accessor.sqlite-archive-store.js";
 import { materializeSessionStateDeletePlans } from "./session-accessor.sqlite-archive.js";
-import type { SqliteSessionReclamationDiagnostics } from "./session-accessor.sqlite-contract.js";
+import type {
+  SqliteSessionArchivePruningDiagnostics,
+  SqliteSessionReclamationDiagnostics,
+} from "./session-accessor.sqlite-contract.js";
 import { emitArchivedTranscriptUpdates } from "./session-accessor.sqlite-events.js";
 import {
   collectSessionStateIdsForEntry,
@@ -492,14 +495,23 @@ async function enforceSessionHistoryMaintenanceSerialized(
   });
   const databaseOptions = toDatabaseOptions(resolved);
   const archiveDirectory = resolveSqliteTranscriptArchiveDirectory(resolved);
-  let { usage, removedFiles } = await runExclusiveSqliteSessionWrite(resolved, async () =>
-    pruneAllSessionTranscriptArchivesToHighWater({
-      archiveDirectory,
-      databaseOptions,
-      highWaterBytes,
-      storePath: params.storePath,
-    }),
-  );
+  const pruneArchives = (trigger: SqliteSessionArchivePruningDiagnostics["trigger"]) => {
+    const archivePruning: SqliteSessionArchivePruningDiagnostics = { trigger };
+    return runExclusiveSqliteSessionWrite(
+      resolved,
+      async () =>
+        pruneAllSessionTranscriptArchivesToHighWater({
+          archiveDirectory,
+          databaseOptions,
+          diagnostics: archivePruning,
+          highWaterBytes,
+          storePath: params.storePath,
+        }),
+      "session.history.archive-prune",
+      { archivePruning },
+    );
+  };
+  let { usage, removedFiles } = await pruneArchives("initial");
   let removedEntries = 0;
   const candidates = readHistoricalSessionIds({
     databaseOptions,
@@ -515,31 +527,34 @@ async function enforceSessionHistoryMaintenanceSerialized(
       scope: params.storePath,
       identities: [sessionId],
       run: async () => {
-        const plan = await runExclusiveSqliteSessionWrite(resolved, async () =>
-          withSqliteSessionDatabase(databaseOptions, (database) => {
-            const protectedBeforeArchive = collectCandidateAdditionalProtection({
-              database,
-              preserveRecentMs: params.maintenance.preserveRecentMs,
-              sessionId,
-              storePath: params.storePath,
-            });
-            for (const referenced of readReferencedSessionIds(
-              database,
-              undefined,
-              [sessionId],
-              params.maintenance,
-            )) {
-              protectedBeforeArchive.add(referenced);
-            }
-            return planSessionStateDeleteIfUnreferenced({
-              archiveDirectory,
-              archiveTranscript: true,
-              database,
-              reason: "deleted",
-              referencedSessionIds: protectedBeforeArchive,
-              sessionId,
-            });
-          }),
+        const plan = await runExclusiveSqliteSessionWrite(
+          resolved,
+          async () =>
+            withSqliteSessionDatabase(databaseOptions, (database) => {
+              const protectedBeforeArchive = collectCandidateAdditionalProtection({
+                database,
+                preserveRecentMs: params.maintenance.preserveRecentMs,
+                sessionId,
+                storePath: params.storePath,
+              });
+              for (const referenced of readReferencedSessionIds(
+                database,
+                undefined,
+                [sessionId],
+                params.maintenance,
+              )) {
+                protectedBeforeArchive.add(referenced);
+              }
+              return planSessionStateDeleteIfUnreferenced({
+                archiveDirectory,
+                archiveTranscript: true,
+                database,
+                reason: "deleted",
+                referencedSessionIds: protectedBeforeArchive,
+                sessionId,
+              });
+            }),
+          "session.history.eviction-prepare",
         );
         if (!plan) {
           return null;
@@ -570,6 +585,7 @@ async function enforceSessionHistoryMaintenanceSerialized(
                   sessionId,
                 });
               }),
+            "session.history.reclamation-plan",
             diagnostics,
           );
           if (!reclamationPlan) {
@@ -617,14 +633,7 @@ async function enforceSessionHistoryMaintenanceSerialized(
       // destroyed at most once, and pruning an extracted copy beats evicting
       // additional searchable history. No prune runs between an archive write
       // and its row-deletion commit, so a sole copy is never mid-flight here.
-      const repruned = await runExclusiveSqliteSessionWrite(resolved, async () =>
-        pruneAllSessionTranscriptArchivesToHighWater({
-          archiveDirectory,
-          databaseOptions,
-          highWaterBytes,
-          storePath: params.storePath,
-        }),
-      );
+      const repruned = await pruneArchives("after-eviction");
       removedFiles += repruned.removedFiles;
       usage = repruned.usage;
     }
@@ -633,14 +642,7 @@ async function enforceSessionHistoryMaintenanceSerialized(
   if (usage.totalBytes > highWaterBytes) {
     // Candidates are exhausted but archives may remain; finish the pass at the
     // target instead of returning over budget with removable artifacts.
-    const finalPrune = await runExclusiveSqliteSessionWrite(resolved, async () =>
-      pruneAllSessionTranscriptArchivesToHighWater({
-        archiveDirectory,
-        databaseOptions,
-        highWaterBytes,
-        storePath: params.storePath,
-      }),
-    );
+    const finalPrune = await pruneArchives("final");
     removedFiles += finalPrune.removedFiles;
     usage = finalPrune.usage;
   }
@@ -684,13 +686,17 @@ async function enforceSessionHistoryMaintenanceSerialized(
           continue;
         }
         removedEntries += 1;
-        await runExclusiveSqliteSessionWrite(resolved, async () => {
-          try {
-            await reclaimSqliteFreePages(databaseOptions);
-          } catch {
-            // The durable deletion succeeded; a later pass can reclaim pages.
-          }
-        });
+        await runExclusiveSqliteSessionWrite(
+          resolved,
+          async () => {
+            try {
+              await reclaimSqliteFreePages(databaseOptions);
+            } catch {
+              // The durable deletion succeeded; a later pass can reclaim pages.
+            }
+          },
+          "session.history.free-pages",
+        );
         usage = await measureSessionPhysicalDiskUsage(params.storePath);
       }
       if (batch.exhausted) {

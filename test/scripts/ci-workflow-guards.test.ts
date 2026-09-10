@@ -7380,7 +7380,9 @@ server.listen(0, "127.0.0.1", () => {
     for (const pipeline of pipelines) {
       // Each profile starts independently; a slow/full declaration build cannot hold up UI readers.
       expect(pipeline.needs).toBe("validate_selected_ref");
-      expect(pipeline.if).toBe("inputs.include_repo_e2e && inputs.live_suite_filter == ''");
+      expect(pipeline.if).toBe(
+        "(!inputs.prepare_only) && inputs.include_repo_e2e && inputs.live_suite_filter == ''",
+      );
       expect(pipeline.uses).toBe("./.github/workflows/openclaw-repo-e2e-reusable.yml");
       expect(pipeline.with.ref).toBe("${{ needs.validate_selected_ref.outputs.selected_sha }}");
       expect(pipeline.with.advisory).toBe("${{ inputs.advisory }}");
@@ -13367,8 +13369,10 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
     expect(helperPrivateServerFiles.toSorted()).toEqual([
       "ui/src/e2e/agent-file-lifecycle.real-gateway.e2e.test.ts",
       "ui/src/e2e/chat-agent-avatar.real-gateway.e2e.test.ts",
+      "ui/src/e2e/chat-composer-websearch-kill-switch.real-gateway.e2e.test.ts",
       "ui/src/e2e/chat-loading-performance.real-gateway.e2e.test.ts",
       "ui/src/e2e/chat-project-media.real-gateway.e2e.test.ts",
+      "ui/src/e2e/chat-stop-finished-run.real-gateway.e2e.test.ts",
       "ui/src/e2e/chat-thinking-metadata.real-gateway.e2e.test.ts",
       "ui/src/e2e/chat-widget-sandbox.real-gateway.e2e.test.ts",
       "ui/src/e2e/child-session-load-errors.e2e.test.ts",
@@ -15087,12 +15091,17 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
   it("provisions ripgrep for real filesystem contract selections", () => {
     const contract = "src/agents/filesystem-tools-output-contract.test.ts";
     const nativeTools = "src/agents/sessions/tools/index.test.ts";
+    const bytePaths = "src/agents/sessions/tools/grep.byte-path.test.ts";
     const unrelated = "src/agents/run-wait.test.ts";
     const selections = [
       { targets: [contract] },
       { includePatterns: [contract] },
       { includePatterns: ["src/agents/filesystem-*.test.ts"] },
       { targets: [nativeTools] },
+      { targets: [bytePaths] },
+      { includePatterns: [bytePaths] },
+      { groups: [{ shard_name: "agentic-agents-support", targets: [bytePaths] }] },
+      { groups: [{ shard_name: "agentic-agents-support", includePatterns: [bytePaths] }] },
       { includePatterns: [unrelated] },
       { shardName: "agentic-agents-core-runtime" },
       { shardName: "agentic-agents-support" },
@@ -15122,6 +15131,10 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
       expectDefined(result.outputs.checks_node_core_nondist_matrix, "non-dist Node matrix"),
     ) as { include: { requires_ripgrep?: boolean }[] };
     expect(matrix.include.map((row) => Boolean(row.requires_ripgrep))).toEqual([
+      true,
+      true,
+      true,
+      true,
       true,
       true,
       true,

@@ -171,6 +171,9 @@ describe("tsdown config", () => {
         (entry as Record<string, unknown>)["worker/worker"] === "src/worker/worker-deploy-entry.ts"
       );
     });
+    const handoffGraph = configs.find((config) =>
+      entryKeys(config).includes("managed-handoff-runtime"),
+    );
     const inlinePlugins = configs.flatMap(
       (config) =>
         config.plugins?.filter((plugin) => plugin.name === STATE_SCHEMA_INLINE_PLUGIN_NAME) ?? [],
@@ -182,10 +185,13 @@ describe("tsdown config", () => {
     expect(workerGraph?.plugins).toContainEqual(
       expect.objectContaining({ name: STATE_SCHEMA_INLINE_PLUGIN_NAME }),
     );
+    expect(handoffGraph?.plugins).toContainEqual(
+      expect.objectContaining({ name: STATE_SCHEMA_INLINE_PLUGIN_NAME }),
+    );
     expect(entrySources(unifiedGraph)["native-hook-relay/entry"]).toBe(
       "src/cli/native-hook-relay-entry.ts",
     );
-    expect(inlinePlugins).toHaveLength(2);
+    expect(inlinePlugins).toHaveLength(3);
   });
 
   it("keeps core, plugin runtime, plugin-sdk, bundled root plugins, and bundled hooks in one dist graph", () => {
@@ -203,7 +209,6 @@ describe("tsdown config", () => {
       "config/sessions/session-accessor.sqlite-archive.worker",
       "infra/sqlite-readonly-location.worker",
       "state/openclaw-database-verify.worker",
-      "system-agent/setup-inference-detection.worker",
       "plugins/memory-state",
       "subagent-registry.runtime",
       "task-registry-control.runtime",
