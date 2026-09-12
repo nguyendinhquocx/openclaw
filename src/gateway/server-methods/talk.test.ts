@@ -1,8 +1,7 @@
+import { expectDefined } from "@openclaw/normalization-core";
 /**
  * Tests for talk gateway methods that coordinate speech and audio providers.
  */
-
-import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { ErrorCodes } from "../../../packages/gateway-protocol/src/index.js";
 import { createDeferred } from "../../../test/helpers/promise.js";
@@ -18,12 +17,13 @@ import { getAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
 import { setActiveDegradedSecretOwners } from "../../secrets/runtime-degraded-state.js";
 import { ensureProfileForEmail } from "../../state/user-profiles.js";
 import { resolveRealtimeVoiceAgentConsultToolsAllow } from "../../talk/agent-consult-tool.js";
+import { checkClientVoiceToolConfirmationPolicy } from "../../talk/client-voice-confirmation.js";
 import {
-  checkClientVoiceToolConfirmationPolicy,
-  noteClientVoiceConfirmationUtterance,
-} from "../../talk/client-voice-confirmation.js";
-import { resetClientVoiceConfirmationStateForTest } from "../../talk/client-voice-confirmation.test-support.js";
+  noteClientVoiceConfirmationUtteranceForTest as noteClientVoiceConfirmationUtterance,
+  resetClientVoiceConfirmationStateForTest,
+} from "../../talk/client-voice-confirmation.test-support.js";
 import { REALTIME_VOICE_DESCRIBE_VIEW_TOOL_NAME } from "../../talk/describe-view-tool.js";
+import type { RealtimeVoiceProviderResolveConfigContext } from "../../talk/provider-types.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { resolveSessionMutationAuthorization } from "../session-sharing.js";
 import { prepareTalkAgentConsultTranscript } from "../talk-agent-consult-transcript.js";
@@ -668,7 +668,16 @@ describe("talk.catalog handler", () => {
       defaultModel: "gpt-realtime-2.1",
       models: ["gpt-realtime-2.1"],
       voices: ["alloy", "marin"],
-      resolveConfig: vi.fn(({ rawConfig }: { rawConfig: Record<string, unknown> }) => rawConfig),
+      resolveConfig: vi.fn(
+        ({ rawConfig, agentId, surface }: RealtimeVoiceProviderResolveConfigContext) => ({
+          ...rawConfig,
+          model:
+            rawConfig.model ??
+            (agentId === "voice" && surface === "browser-session"
+              ? "scoped-browser-default"
+              : "legacy-default"),
+        }),
+      ),
       isConfigured: vi.fn(() => false),
       createBridge: vi.fn(),
       createBrowserSession: vi.fn(),
@@ -695,6 +704,7 @@ describe("talk.catalog handler", () => {
         getRuntimeConfig: () =>
           ({
             talk: {
+              agentId: "voice",
               realtime: {
                 provider: "openai",
                 providers: { openai: { model: "gpt-realtime-2.1" } },
@@ -709,6 +719,7 @@ describe("talk.catalog handler", () => {
       realtime: { providers: Array<Record<string, unknown>> };
     };
     expect(catalog.realtime.providers[0]).toMatchObject({
+      defaultModel: "scoped-browser-default",
       models: ["gpt-realtime-2.1"],
       voices: ["alloy", "marin"],
       activeVoices: ["marin", "cedar"],
@@ -733,55 +744,90 @@ describe("talk.catalog handler", () => {
     );
   });
 
-  it("uses the gateway-relay surface for relay catalog resolution", async () => {
-    const isConfigured = vi.fn(() => true);
-    const provider = {
-      id: "relay",
-      label: "Relay Voice",
-      voices: ["relay-default"],
-      isConfigured,
-      capabilities: {
-        transports: ["gateway-relay"],
-        supportsToolCalls: true,
-      },
-      createBridge: vi.fn(),
-    };
-    mocks.listRealtimeVoiceProviders.mockReturnValue([provider] as never);
-    mocks.resolveConfiguredRealtimeVoiceProvider.mockReturnValue({
-      provider,
-      providerConfig: {},
-    } as never);
-    const respond = vi.fn();
-
-    await callTalkHandler("talk.catalog", {
-      params: {},
-      id: "relay-catalog",
-      client: { connect: { scopes: ["operator.read"] } },
-      respond,
-      context: {
-        getRuntimeConfig: () =>
+  it.each([undefined, "force-agent-consult"])(
+    "resolves the relay catalog default for consult policy %s",
+    async (consultRouting) => {
+      const autoRespondToAudio = consultRouting !== "force-agent-consult";
+      const expectedModel = autoRespondToAudio ? "relay-default" : "manual-relay-default";
+      const azure = { endpoint: "https://example.openai.azure.com" };
+      const isConfigured = vi.fn(({ providerConfig }) => providerConfig.model === expectedModel);
+      const provider = {
+        id: "relay",
+        label: "Relay Voice",
+        defaultModel: "legacy-default",
+        resolveConfig: vi.fn(
           ({
-            talk: {
-              realtime: {
-                provider: "relay",
-                transport: "gateway-relay",
-              },
-            },
-          }) as OpenClawConfig,
-      },
-    });
+            rawConfig,
+            agentId,
+            surface,
+            autoRespondToAudio: autoRespond,
+          }: RealtimeVoiceProviderResolveConfigContext) => ({
+            ...rawConfig,
+            model:
+              agentId === "voice" && surface === "gateway-relay" && rawConfig.azure !== undefined
+                ? autoRespond === false
+                  ? "manual-relay-default"
+                  : "relay-default"
+                : "legacy-default",
+          }),
+        ),
+        voices: ["relay-default"],
+        isConfigured,
+        capabilities: {
+          transports: ["gateway-relay"],
+          supportsToolCalls: true,
+        },
+        createBridge: vi.fn(),
+      };
+      mocks.listRealtimeVoiceProviders.mockReturnValue([provider] as never);
+      mocks.resolveConfiguredRealtimeVoiceProvider.mockReturnValue({
+        provider,
+        providerConfig: {},
+      } as never);
+      const respond = vi.fn();
 
-    expect(mocks.resolveConfiguredRealtimeVoiceProvider).toHaveBeenCalledWith(
-      expect.objectContaining({ surface: "gateway-relay" }),
-    );
-    expect(mocks.resolveRealtimeVoiceProviderCapabilities).toHaveBeenCalledWith(
-      expect.objectContaining({ agentId: expect.any(String), surface: "gateway-relay" }),
-    );
-    expect(isConfigured).toHaveBeenCalledWith(expect.not.objectContaining({ surface: "bridge" }));
-    const catalog = expectRespondOk(respond);
-    expect(catalog.realtime).toEqual(expect.objectContaining({ ready: true }));
-    expect(catalog.realtime.providers[0]).toMatchObject({ voices: ["relay-default"] });
-  });
+      await callTalkHandler("talk.catalog", {
+        params: {},
+        id: "relay-catalog",
+        client: { connect: { scopes: ["operator.read"] } },
+        respond,
+        context: {
+          getRuntimeConfig: () =>
+            ({
+              talk: {
+                agentId: "voice",
+                realtime: {
+                  provider: "relay",
+                  transport: "gateway-relay",
+                  consultRouting,
+                  providers: { relay: { azure } },
+                },
+              },
+            }) as OpenClawConfig,
+        },
+      });
+
+      expect(mocks.resolveConfiguredRealtimeVoiceProvider).toHaveBeenCalledWith(
+        expect.objectContaining({ agentId: "voice", surface: "gateway-relay", autoRespondToAudio }),
+      );
+      expect(mocks.resolveRealtimeVoiceProviderCapabilities).toHaveBeenCalledWith(
+        expect.objectContaining({
+          agentId: "voice",
+          surface: "gateway-relay",
+          providerConfig: { model: expectedModel, azure },
+        }),
+      );
+      expect(isConfigured).toHaveBeenCalledWith(expect.not.objectContaining({ surface: "bridge" }));
+      const catalog = expectRespondOk(respond);
+      expect(catalog.realtime).toEqual(expect.objectContaining({ ready: true }));
+      expect(catalog.realtime.providers[0]).toMatchObject({
+        configured: true,
+        defaultModel: expectedModel,
+        voices: ["relay-default"],
+      });
+      expect(provider.resolveConfig).toHaveBeenCalledOnce();
+    },
+  );
 
   it.each(["realtime-fast", "realtime-fast-alias"])(
     "reports the runtime-selected automatic providers and configured rows for %s",
@@ -2159,6 +2205,7 @@ describe("talk.session unified handlers", () => {
       providerConfigs: { openai: { apiKey: "openai-key" } },
       defaultModel: "gpt-realtime-default",
       surface: "gateway-relay",
+      autoRespondToAudio: false,
     });
     expect(mocks.ensureClientVoiceAgentSessionEntry).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -4218,6 +4265,13 @@ describe("talk.client.create handler", () => {
     });
 
     const createInput = mockCallArg(createBrowserSession) as Record<string, unknown>;
+    expect(mocks.resolveConfiguredRealtimeVoiceProvider).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentId: "main",
+        surface: "browser-session",
+        requiredCapabilities: { supportsVideoFrames: true },
+      }),
+    );
     expect(createInput.tools).toContainEqual(
       expect.objectContaining({ name: REALTIME_VOICE_DESCRIBE_VIEW_TOOL_NAME }),
     );

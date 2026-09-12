@@ -21,7 +21,14 @@ import { isSupportedOpenClawNodeVersion } from "../../node-version.mjs";
 import { requireNodeTool } from "../helpers/node-toolchain.js";
 import { NODE_RELEASE_VERSION_CASES } from "../helpers/node-version-cases.js";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
-import { createInstallGitCommitFixtureScript } from "./install-git-fixtures.js";
+import {
+  createInstallGitBranchFallbackFixtureScript,
+  createInstallGitUpdateFixtureScript,
+  createInstallGitRebaseRecoveryFixtureScript,
+  createInstallGitHookRefusalFixtureScript,
+  createInstallGitCommitFixtureScript,
+  createInstallGitTagPreferenceFixtureScript,
+} from "./install-git-fixtures.js";
 import {
   writeNpmBeforePolicyFixture,
   writeNpmFreshnessConflictFixture,
@@ -4387,42 +4394,16 @@ EOF
   });
 
   it("prefers a release tag over a same-named branch", () => {
-    const result = runInstallShell(`
-      set -euo pipefail
-      source "${SCRIPT_PATH}"
+    const result = runInstallShell(
+      createInstallGitTagPreferenceFixtureScript(
+        SCRIPT_PATH,
+        `
       run_quiet_step() {
         shift
         "$@"
-      }
-      tmp="$(mktemp -d)"
-      trap 'rm -rf "$tmp"' EXIT
-      remote="$tmp/remote.git"
-      seed="$tmp/seed"
-      repo="$tmp/repo"
-      ref=v2026.5.12
-      git init --bare -q "$remote"
-      git init -q --initial-branch=main "$seed"
-      git -C "$seed" config user.email test@example.invalid
-      git -C "$seed" config user.name test
-      printf 'tag\n' > "$seed/state.txt"
-      git -C "$seed" add state.txt
-      git -C "$seed" commit -qm tag
-      tag_head="$(git -C "$seed" rev-parse HEAD)"
-      git -C "$seed" remote add origin "$remote"
-      git -C "$seed" push -q -u origin main
-      git -C "$seed" tag "$ref"
-      git -C "$seed" push -q origin "refs/tags/$ref"
-      git -C "$seed" checkout -qb "$ref"
-      printf 'branch\n' > "$seed/state.txt"
-      git -C "$seed" commit -qam branch
-      branch_head="$(git -C "$seed" rev-parse HEAD)"
-      git -C "$seed" push -q origin "refs/heads/$ref"
-      git clone -q "$remote" "$repo"
-      checkout_git_openclaw_ref "$repo" "$ref"
-      selected="$(git -C "$repo" rev-parse HEAD)"
-      printf 'selected=%s tag=%s branch=%s kind=%s\n' "$selected" "$tag_head" "$branch_head" "$GIT_REF_KIND"
-      [[ "$selected" == "$tag_head" && "$selected" != "$branch_head" && "$GIT_REF_KIND" == "immutable" ]]
-    `);
+      }`,
+      ),
+    );
 
     expect(result.status).toBe(0);
     expect(result.stdout).toContain("kind=immutable");
@@ -4430,39 +4411,16 @@ EOF
   });
 
   it("falls back to a v-prefixed branch when no matching release tag exists", () => {
-    const result = runInstallShell(`
-      set -euo pipefail
-      source "${SCRIPT_PATH}"
+    const result = runInstallShell(
+      createInstallGitBranchFallbackFixtureScript(
+        SCRIPT_PATH,
+        `
       run_quiet_step() {
         shift
         "$@"
-      }
-      tmp="$(mktemp -d)"
-      trap 'rm -rf "$tmp"' EXIT
-      remote="$tmp/remote.git"
-      seed="$tmp/seed"
-      repo="$tmp/repo"
-      ref=v2-hotfix
-      git init --bare -q "$remote"
-      git init -q --initial-branch=main "$seed"
-      git -C "$seed" config user.email test@example.invalid
-      git -C "$seed" config user.name test
-      printf 'base\\n' > "$seed/state.txt"
-      git -C "$seed" add state.txt
-      git -C "$seed" commit -qm base
-      git -C "$seed" remote add origin "$remote"
-      git -C "$seed" push -q -u origin main
-      git -C "$seed" checkout -qb "$ref"
-      printf 'branch\\n' > "$seed/state.txt"
-      git -C "$seed" commit -qam branch
-      branch_head="$(git -C "$seed" rev-parse HEAD)"
-      git -C "$seed" push -q origin "refs/heads/$ref"
-      git clone -q "$remote" "$repo"
-      checkout_git_openclaw_ref "$repo" "$ref"
-      selected="$(git -C "$repo" rev-parse HEAD)"
-      printf 'selected=%s branch=%s kind=%s\\n' "$selected" "$branch_head" "$GIT_REF_KIND"
-      [[ "$selected" == "$branch_head" && "$GIT_REF_KIND" == "moving" ]]
-    `);
+      }`,
+      ),
+    );
 
     expect(result.status).toBe(0);
     expect(result.stdout).toContain("kind=moving");
@@ -4470,42 +4428,13 @@ EOF
   });
 
   it("updates a stale existing main checkout from the remote tracking ref", () => {
-    const result = runInstallShell(`
-      set -euo pipefail
-      source "${SCRIPT_PATH}"
-      tmp="$(mktemp -d)"
-      trap 'rm -rf "$tmp"' EXIT
-      remote="$tmp/remote.git"
-      source_repo="$tmp/source"
-      repo="$tmp/repo"
-      git init --bare -q "$remote"
-      git init -q --initial-branch=main "$source_repo"
-      git -C "$source_repo" config user.email test@example.invalid
-      git -C "$source_repo" config user.name test
-      printf 'base\\n' > "$source_repo/state.txt"
-      git -C "$source_repo" add state.txt
-      git -C "$source_repo" commit -qm base
-      git -C "$source_repo" remote add origin "$remote"
-      git -C "$source_repo" push -q -u origin main
-      git --git-dir="$remote" symbolic-ref HEAD refs/heads/main
-      git clone -q "$remote" "$repo"
-      git -C "$repo" config user.email test@example.invalid
-      git -C "$repo" config user.name test
-      printf 'target\\n' > "$source_repo/state.txt"
-      git -C "$source_repo" commit -qam target
-      git -C "$source_repo" push -q origin main
-      base="$(git -C "$repo" rev-parse HEAD)"
-      stale_tracking="$(git -C "$repo" rev-parse refs/remotes/origin/main)"
-      [[ "$base" == "$stale_tracking" ]]
-      run_quiet_step() { shift; "$@"; }
-      GIT_UPDATE=1
-      checkout_git_openclaw_ref "$repo" main
-      head="$(git -C "$repo" rev-parse HEAD)"
-      tracking="$(git -C "$repo" rev-parse refs/remotes/origin/main)"
-      remote_head="$(git --git-dir="$remote" rev-parse refs/heads/main)"
-      printf 'head=%s\\ntracking=%s\\nremote=%s\\n' "$head" "$tracking" "$remote_head"
-      [[ "$head" == "$remote_head" && "$tracking" == "$remote_head" && "$head" != "$base" ]]
-    `);
+    const result = runInstallShell(
+      createInstallGitUpdateFixtureScript(
+        SCRIPT_PATH,
+        `
+      run_quiet_step() { shift; "$@"; }`,
+      ),
+    );
 
     expect(result.status).toBe(0);
     expect(result.stdout).toContain("head=");
@@ -4514,109 +4443,20 @@ EOF
   });
 
   it("restores an existing main checkout after a failed rebase", () => {
-    const result = runInstallShell(`
-      set -euo pipefail
-      source "${SCRIPT_PATH}"
-      tmp="$(mktemp -d)"
-      trap 'rm -rf "$tmp"' EXIT
-      remote="$tmp/remote.git"
-      seed="$tmp/seed"
-      repo="$tmp/repo"
-      git init --bare -q "$remote"
-      git init -q --initial-branch=main "$seed"
-      git -C "$seed" config user.email test@example.invalid
-      git -C "$seed" config user.name test
-      printf 'base\\n' > "$seed/state.txt"
-      git -C "$seed" add state.txt
-      git -C "$seed" commit -qm base
-      git -C "$seed" remote add origin "$remote"
-      git -C "$seed" push -q -u origin main
-      git --git-dir="$remote" symbolic-ref HEAD refs/heads/main
-      git clone -q "$remote" "$repo"
-      git -C "$repo" config user.email test@example.invalid
-      git -C "$repo" config user.name test
-      printf 'remote\\n' > "$seed/state.txt"
-      git -C "$seed" commit -qam remote
-      git -C "$seed" push -q origin main
-      printf 'local\\n' > "$repo/state.txt"
-      git -C "$repo" commit -qam local
-      printf 'keep this user change\\n' > "$repo/user-note.txt"
-      expected_head="$(git -C "$repo" rev-parse HEAD)"
-      expected_status="$(git -C "$repo" status --porcelain=v1 --untracked-files=all)"
-      set +e
-      output="$(checkout_git_openclaw_ref "$repo" main 2>&1)"
-      status=$?
-      set -e
-      [[ "$status" -ne 0 ]]
-      actual_head="$(git -C "$repo" rev-parse HEAD)"
-      actual_status="$(git -C "$repo" status --porcelain=v1 --untracked-files=all)"
-      rebase_merge="$(git -C "$repo" rev-parse --git-path rebase-merge)"
-      rebase_apply="$(git -C "$repo" rev-parse --git-path rebase-apply)"
-      [[ "$actual_head" == "$expected_head" ]]
-      [[ "$actual_status" == "$expected_status" ]]
-      [[ "$(cat "$repo/user-note.txt")" == "keep this user change" ]]
-      [[ ! -d "$rebase_merge" && ! -d "$rebase_apply" ]]
-      [[ "$output" == *"restored to its pre-update state"* ]]
-      printf 'recovery=head-restored status-clean rebase-state-cleared\\n'
-    `);
+    const result = runInstallShell(createInstallGitRebaseRecoveryFixtureScript(SCRIPT_PATH));
 
     expect(result.status).toBe(0);
     expect(result.stdout).toContain("recovery=head-restored status-clean rebase-state-cleared");
   });
 
   it("verifies unchanged state when a hook refuses rebase before it starts", () => {
-    const result = runInstallShell(`
-      set -euo pipefail
-      source "${SCRIPT_PATH}"
-      run_quiet_step() { shift; "$@"; }
-      tmp="$(mktemp -d)"
-      trap 'rm -rf "$tmp"' EXIT
-      remote="$tmp/remote.git"
-      seed="$tmp/seed"
-      repo="$tmp/repo"
-      git init --bare -q "$remote"
-      git init -q --initial-branch=main "$seed"
-      git -C "$seed" config user.email test@example.invalid
-      git -C "$seed" config user.name test
-      printf 'base\\n' > "$seed/state.txt"
-      git -C "$seed" add state.txt
-      git -C "$seed" commit -qm base
-      git -C "$seed" remote add origin "$remote"
-      git -C "$seed" push -q -u origin main
-      git --git-dir="$remote" symbolic-ref HEAD refs/heads/main
-      git clone -q "$remote" "$repo"
-      printf 'remote\\n' > "$seed/state.txt"
-      git -C "$seed" commit -qam remote
-      git -C "$seed" push -q origin main
-      git -C "$repo" config user.email test@example.invalid
-      git -C "$repo" config user.name test
-      printf 'local\\n' > "$repo/local.txt"
-      git -C "$repo" add local.txt
-      git -C "$repo" commit -qm local
-      cat > "$repo/.git/hooks/pre-rebase" <<'HOOK'
-#!/usr/bin/env bash
-exit 42
-HOOK
-      chmod +x "$repo/.git/hooks/pre-rebase"
-      printf 'keep this user change\\n' > "$repo/user-note.txt"
-      expected_head="$(git -C "$repo" rev-parse HEAD)"
-      expected_status="$(git -C "$repo" status --porcelain=v1 --untracked-files=all)"
-      set +e
-      output="$(GIT_UPDATE=1 checkout_git_openclaw_ref "$repo" main 2>&1)"
-      status=$?
-      set -e
-      actual_head="$(git -C "$repo" rev-parse HEAD)"
-      actual_status="$(git -C "$repo" status --porcelain=v1 --untracked-files=all)"
-      rebase_merge="$(git -C "$repo" rev-parse --git-path rebase-merge)"
-      rebase_apply="$(git -C "$repo" rev-parse --git-path rebase-apply)"
-      [[ "$status" -ne 0 ]]
-      [[ "$actual_head" == "$expected_head" ]]
-      [[ "$actual_status" == "$expected_status" ]]
-      [[ "$(cat "$repo/user-note.txt")" == "keep this user change" ]]
-      [[ ! -d "$rebase_merge" && ! -d "$rebase_apply" ]]
-      [[ "$output" == *"restored to its pre-update state"* ]]
-      printf 'hook-refusal=head-verified status-verified rebase-state-absent\\n'
-    `);
+    const result = runInstallShell(
+      createInstallGitHookRefusalFixtureScript(
+        SCRIPT_PATH,
+        `
+      run_quiet_step() { shift; "$@"; }`,
+      ),
+    );
 
     expect(result.status).toBe(0);
     expect(result.stdout).toContain(
