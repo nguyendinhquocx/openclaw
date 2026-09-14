@@ -1656,6 +1656,8 @@ describe("memory index", () => {
 
       expect(ftsMatchCount(markers.retained)).toBe(0);
       expect(ftsMatchCount(markers.trigger)).toBe(0);
+      // Hand ordinary dirty state to maintenance so recovery must use the retained queue.
+      manager.takeReindexRetryStateForMaintenance();
       const recoveryState = manager as unknown as {
         syncing: Promise<void> | null;
         queuedSessions: Map<string, unknown>;
@@ -1708,12 +1710,14 @@ describe("memory index", () => {
       trigger: "LIVE REJECTION RECOVERY TARGET 729",
     };
     const sessionKey = (sessionId: string) => `agent:main:live-rejection:${sessionId}`;
+    // Startup catchup must not consume the controlled sync mocks.
     const manager = await getFreshManager(
       createCfg({
         provider: "none",
         sources: ["sessions"],
         sessionMemory: true,
       }),
+      "cli",
     );
     let resolveActiveSync: (() => void) | undefined;
     const activeSyncGate = new Promise<void>((resolve) => {

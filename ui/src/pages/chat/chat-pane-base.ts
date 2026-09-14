@@ -10,6 +10,7 @@ import type {
 import type {
   ControlUiSessionBranch,
   ControlUiSessionPullRequest,
+  ControlUiSessionPullRequestSnapshot,
 } from "../../../../src/gateway/control-ui-contract.js";
 import type { GatewayBrowserClient } from "../../api/gateway.ts";
 import type { GatewaySessionRow } from "../../api/types.ts";
@@ -89,6 +90,8 @@ export abstract class ChatPaneBase extends OpenClawLightDomElement {
   // Disconnect releases the waiter so reconnect can schedule in its new lifecycle.
   private hiddenUpdateResume: (() => void) | undefined;
   private readonly handleVisibilityChange = () => {
+    // Lit parks hidden updates, but progress watches must follow visibility immediately.
+    this.progressCard.hostUpdate();
     if (document.visibilityState !== "hidden") {
       this.hiddenUpdateResume?.();
       return;
@@ -210,6 +213,7 @@ export abstract class ChatPaneBase extends OpenClawLightDomElement {
     const wasConversationPresented = this.conversationPresented;
     this.headerPresentationGeneration += 1;
     this.presentedValue = value;
+    this.progressCard.hostUpdate();
     this.requestUpdate("presented", previous);
     this.presentedChanged(value);
     this.notifyConversationPresentation(wasConversationPresented);
@@ -318,13 +322,14 @@ export abstract class ChatPaneBase extends OpenClawLightDomElement {
   );
   protected readonly transcript = new ChatTranscriptController(this, {
     onViewportResize: () => this.chatState.handleTranscriptResize(),
+    canFollowEnd: () => this.state !== undefined && !this.state.chatFollowLocked,
     onReaderScroll: (towardEnd) => this.state && handleChatScrollTakeover(this.state, towardEnd),
   });
   protected readonly progressCard = new SessionProgressCardController(this, {
     gateway: () => this.context?.gateway,
     target: () => {
       const state = this.state;
-      if (!state || this.isCurrentSessionArchived(state)) {
+      if (!state || this.isCurrentSessionArchived(state) || !this.secondarySessionReadsReady()) {
         return undefined;
       }
       return this.resolveChatReadTarget();
@@ -398,6 +403,8 @@ export abstract class ChatPaneBase extends OpenClawLightDomElement {
   @litState() protected resetConfirmationOpen = false;
   protected deferredSessionHydrationRequestVersion = 0;
   protected sessionCompanionHydrationKey = "";
+  protected sessionCompanionFocusGeneration = 0;
+  @litState() protected sessionCompanionFocusRequest?: () => boolean;
   protected readonly sessionCompanionThreads = new ChatSessionCompanionThreads(() => {
     this.requestUpdate();
   });
@@ -460,6 +467,43 @@ export abstract class ChatPaneBase extends OpenClawLightDomElement {
     this.setSessionObserverVisibility(true);
   }
 
+  protected async openSessionCompanion(pageState: ChatPageHost, question: string): Promise<void> {
+    const sessionKey = pageState.sessionKey;
+    const agentId = resolveChatAgentId(pageState);
+    const generation = this.connectionGeneration;
+    const focusGeneration = this.sessionCompanionFocusGeneration;
+    const composer = getChatComposerState(this.presentationId);
+    const editRevision = composer.editRevision;
+    const draft = pageState.chatMessage;
+    const ownsFocus = () =>
+      this.state === pageState &&
+      pageState.sessionKey === sessionKey &&
+      resolveChatAgentId(pageState) === agentId &&
+      this.connectionGeneration === generation &&
+      this.sessionCompanionFocusGeneration === focusGeneration &&
+      composer.editRevision === editRevision &&
+      pageState.chatMessage === draft &&
+      isSidebarSlotVisible(pageState.sidebarLayout, "companion") &&
+      (this.ownerDocument.activeElement === this.ownerDocument.body ||
+        this.contains(this.ownerDocument.activeElement)) &&
+      this.isConnected &&
+      this.active &&
+      this.presented;
+    // Consume even an invalidated request so a lazy mount cannot fall back to autofocus.
+    const requestFocus = () => {
+      if (this.sessionCompanionFocusRequest === requestFocus) {
+        this.sessionCompanionFocusRequest = undefined;
+      }
+      return ownsFocus();
+    };
+    // The first lazy mount and the completed answer share the same input intent.
+    this.sessionCompanionFocusRequest = requestFocus;
+    await this.submitSessionCompanionQuestion(question);
+    if (ownsFocus()) {
+      this.sessionCompanionFocusRequest = requestFocus;
+    }
+  }
+
   protected readonly submitSessionCompanionQuestion = async (question: string) => {
     const state = this.state;
     if (!state || !state.sessionKey) {
@@ -468,6 +512,9 @@ export abstract class ChatPaneBase extends OpenClawLightDomElement {
     const sessionKey = state.sessionKey;
     const agentId = resolveChatAgentId(state);
     this.requestSessionRail("open");
+    if (!question.trim()) {
+      return;
+    }
     if (!state.connected || !state.client) {
       this.sessionCompanionThreads.setDraft(sessionKey, question, agentId);
       return;
@@ -578,7 +625,7 @@ export abstract class ChatPaneBase extends OpenClawLightDomElement {
   protected sessionPullRequests: ControlUiSessionPullRequest[] = [];
   protected sessionPullRequestsBranch: ControlUiSessionBranch | undefined;
   protected githubRepo: MarkdownRenderOptions["githubRepo"] = null;
-  protected sessionPullRequestsRateLimited = false;
+  protected sessionPullRequestsStatus: ControlUiSessionPullRequestSnapshot["status"] = "ready";
   protected sessionPullRequestsExpanded = false;
   protected githubPublication: GitHubPublicationBinding | null = null;
   protected dismissedSessionPullRequestIds: ReadonlySet<string> = new Set();
@@ -672,6 +719,7 @@ export abstract class ChatPaneBase extends OpenClawLightDomElement {
   ): boolean;
   protected abstract publishHeaderError(error: unknown, owner?: string): void;
   protected abstract probeSessionDiscussion(sessionKey: string): Promise<void>;
+  protected abstract secondarySessionReadsReady(explicit?: boolean): boolean;
   protected abstract loadHeaderPlatform(
     client: GatewayBrowserClient,
     generation: number,

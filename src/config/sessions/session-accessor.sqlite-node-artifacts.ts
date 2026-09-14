@@ -304,17 +304,20 @@ export function deleteSessionDeliveryArtifacts(
     normalizeStoreSessionKey(trimmedKey),
     ...additionalKeys,
   ]);
-  const competingIdentities = new Set(
-    executeSqliteQuerySync(
-      database.db,
-      db.selectFrom("session_nodes").select("session_key"),
-    ).rows.flatMap((row) =>
-      row.session_key === sessionKey ? [] : [normalizeStoreSessionKey(row.session_key.trim())],
-    ),
-  );
-  const sessionKeys = lookupKeys.filter(
-    (key) => key === sessionKey || !competingIdentities.has(normalizeStoreSessionKey(key.trim())),
-  );
+  let sessionKeys = lookupKeys;
+  if (lookupKeys.some((key) => key !== sessionKey)) {
+    const competingIdentities = new Set(
+      executeSqliteQuerySync(
+        database.db,
+        db.selectFrom("session_nodes").select("session_key"),
+      ).rows.flatMap((row) =>
+        row.session_key === sessionKey ? [] : [normalizeStoreSessionKey(row.session_key.trim())],
+      ),
+    );
+    sessionKeys = lookupKeys.filter(
+      (key) => key === sessionKey || !competingIdentities.has(normalizeStoreSessionKey(key.trim())),
+    );
+  }
   executeSqliteQuerySync(
     database.db,
     db.deleteFrom("conversation_deliveries").where("source_session_key", "in", sessionKeys),
@@ -342,13 +345,14 @@ export function deleteSessionNodeArtifacts(
     "heartbeat_outcomes",
     "session_participants",
     "session_progress_cards",
+    "session_members",
+    "session_suggestions",
   ] as const) {
     if (!presentTables.has(table)) {
       continue;
     }
     executeSqliteQuerySync(database.db, db.deleteFrom(table).where("session_key", "=", sessionKey));
   }
-  clearSessionCollaborationForKey(database, sessionKey);
 }
 
 function readSessionNodeArtifactTables(database: OpenClawAgentDatabase): Set<string> {
