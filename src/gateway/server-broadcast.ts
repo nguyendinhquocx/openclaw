@@ -12,6 +12,7 @@ import type { SystemPresence } from "../infra/system-presence.js";
 import { logRejectedLargePayload } from "../logging/diagnostic-payload.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { queuePluginSessionsChanged } from "../plugins/gateway-events.js";
+import { operatorScopeSatisfied } from "../shared/operator-scope-compat.js";
 import { isBrowserCopilotClient } from "../utils/message-channel.js";
 import {
   GATEWAY_EVENT_DEVICE_PAIR_CHANGED,
@@ -183,12 +184,7 @@ function hasEventScope(
     if (role !== "operator") {
       return false;
     }
-    if (scopes.includes(ADMIN_SCOPE)) {
-      return true;
-    }
-    return explicitPluginScope === READ_SCOPE
-      ? scopes.includes(READ_SCOPE) || scopes.includes(WRITE_SCOPE)
-      : explicitPluginScope === WRITE_SCOPE && scopes.includes(WRITE_SCOPE);
+    return operatorScopeSatisfied(explicitPluginScope, scopes);
   }
   const required = EVENT_SCOPE_GUARDS[event];
   // Plugin-defined gateway broadcast events (plugin.* namespace) are allowed
@@ -198,7 +194,7 @@ function hasEventScope(
     if (role !== "operator") {
       return false;
     }
-    return scopes.includes(WRITE_SCOPE) || scopes.includes(ADMIN_SCOPE);
+    return operatorScopeSatisfied(WRITE_SCOPE, scopes);
   }
   if (!required) {
     return false;
@@ -209,16 +205,7 @@ function hasEventScope(
   if (role !== "operator") {
     return false;
   }
-  if (scopes.includes(ADMIN_SCOPE)) {
-    return true;
-  }
-  if (required.includes(READ_SCOPE)) {
-    return scopes.includes(READ_SCOPE) || scopes.includes(WRITE_SCOPE);
-  }
-  if (required.includes(TALK_SCOPE)) {
-    return scopes.includes(TALK_SCOPE) || scopes.includes(WRITE_SCOPE);
-  }
-  return required.some((scope) => scopes.includes(scope));
+  return required.some((scope) => operatorScopeSatisfied(scope, scopes));
 }
 
 type FrameFields = {
@@ -617,7 +604,12 @@ export function createGatewayBroadcaster(params: {
           // Headers precede source hooks and reads performed while preparing projection.
           getFrameFields();
           let canSkipSourcePayload = false;
-          if (!retained && event === "session.message" && !isProxy(payload) && isRecord(payload)) {
+          if (
+            !retained &&
+            (event === "session.message" || event === "sessions.changed") &&
+            !isProxy(payload) &&
+            isRecord(payload)
+          ) {
             // Classify without executing getters or Proxy traps.
             const prototype = Object.getPrototypeOf(payload);
             canSkipSourcePayload =
