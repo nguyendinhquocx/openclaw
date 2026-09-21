@@ -3,6 +3,7 @@ import { expectDefined } from "@openclaw/normalization-core";
 import { toErrorObject } from "@openclaw/normalization-core/error-coercion";
 import { resolveTimerTimeoutMs } from "@openclaw/normalization-core/number-coercion";
 import { isPromiseLike } from "@openclaw/normalization-core/promise-like";
+import { hasErrnoCode } from "../infra/errno.js";
 import {
   decodeWindowsOutputBuffer,
   resolveWindowsConsoleEncoding,
@@ -136,6 +137,7 @@ async function runCommandWithOutputEncoding(
     timeoutMs,
     cwd,
     input,
+    stdinFileDescriptor,
     baseEnv,
     env,
     noOutputTimeoutMs,
@@ -150,8 +152,13 @@ async function runCommandWithOutputEncoding(
     throw new Error("Process-tree extinction requires process-tree ownership");
   }
   const hasInput = input !== undefined;
-  if (hasInput && options.stdinFileDescriptor !== undefined) {
-    throw new Error("Command accepts either input or stdinFileDescriptor, not both");
+  if (stdinFileDescriptor !== undefined) {
+    if (!Number.isInteger(stdinFileDescriptor) || stdinFileDescriptor < 0) {
+      throw new Error("stdinFileDescriptor must be a nonnegative integer");
+    }
+    if (hasInput) {
+      throw new Error("Command accepts either input or stdinFileDescriptor, not both");
+    }
   }
   if (options.beforeInput && !hasInput) {
     throw new Error("Child input admission requires explicit input");
@@ -510,6 +517,10 @@ async function runCommandWithOutputEncoding(
   let inputAdmissionError: Error | undefined;
   if (options.beforeInput) {
     nodeChild.stdin?.once("error", (cause) => {
+      // Execa preserves the child's result when it closes input early; other faults still cancel.
+      if (hasErrnoCode(cause, "EPIPE")) {
+        return;
+      }
       inputAdmissionError ??= toErrorObject(cause, "Command input failed");
       cancel("signal");
     });
@@ -527,7 +538,7 @@ async function runCommandWithOutputEncoding(
       nodeChild.stdin.end(input);
     } catch (cause) {
       inputAdmissionError = toErrorObject(cause, "Child input admission failed");
-      nodeChild.stdin?.destroy();
+      // EOF releases children blocked on input; keep it withheld until process exit.
       cancel("signal");
     }
   }
