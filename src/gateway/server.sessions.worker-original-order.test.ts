@@ -382,11 +382,9 @@ test("preserves ordered fallback through inventory rehydration, workspace sync, 
     generateWorkerCredential: () => "original-order-credential",
     liveEvents: {
       apply: async () => ({ ok: true, result: { ackedSeq: 1 } }),
-      bindSession: () => true,
       clear: () => {},
       clearEnvironment: () => {},
       rotateCredential: () => true,
-      start: () => {},
     },
     executeInference: async () => ({
       type: "error",

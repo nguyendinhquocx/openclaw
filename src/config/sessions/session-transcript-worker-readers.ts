@@ -21,6 +21,40 @@ export function createSessionHistoryWorkerReaders(
   runRequest: SessionHistoryWorkerRequestRunner,
 ): Omit<SessionHistoryWorkerDatabase, "generation" | "assertCurrent"> {
   return {
+    readArchivePruning: async (input) =>
+      await runRequest(
+        () => ({ kind: "session-archive-pruning", ...input }),
+        JSON.stringify(input).length * 2,
+        (value) => {
+          if (
+            typeof value === "boolean" ||
+            Array.isArray(value) ||
+            value.kind !== "session-archive-pruning"
+          ) {
+            throw new Error(
+              "Session history worker returned another result instead of archive pruning",
+            );
+          }
+          return value.result;
+        },
+      ),
+    readColdMetadata: async (input) =>
+      await runRequest(
+        () => ({ kind: "cold-metadata", ...input }),
+        JSON.stringify(input).length * 2,
+        (value) => {
+          if (
+            typeof value === "boolean" ||
+            Array.isArray(value) ||
+            value.kind !== "cold-metadata"
+          ) {
+            throw new Error(
+              "Session history worker returned another result instead of cold metadata",
+            );
+          }
+          return value;
+        },
+      ),
     searchTranscripts: async (params) =>
       await runRequest(
         () => ({ kind: "transcript-search", params }),
@@ -224,7 +258,7 @@ export function createSessionHistoryWorkerReaders(
           return value;
         },
       ),
-    readExactEntries: async (input) =>
+    readExactEntries: async (input, signal) =>
       await runRequest(
         () => ({ kind: "session-exact-entries", ...input }),
         JSON.stringify(input).length * 2,
@@ -240,6 +274,7 @@ export function createSessionHistoryWorkerReaders(
           }
           return value;
         },
+        signal,
       ),
     readRowFacts: async (input) => {
       if (input.sessionKeys.length > MAX_SESSION_ROW_FACTS_KEYS) {
