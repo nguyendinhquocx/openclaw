@@ -11,7 +11,50 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Setup supported Node runtime
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24.21.0"
+          package-manager-cache: false
+
+      # Conflict markers can occur anywhere, including docs-only changes.
+      # Keep this global while the workflow toolchains stay input-scoped.
+      - name: Disallow tracked merge conflict markers
+        run: node scripts/check-no-conflict-markers.mjs
+
+      - name: Detect workflow audit changes
+        id: scope
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+        with:
+          script: |
+            const { matchesGlob } = require('node:path');
+            const paths = ['.github/workflows/**', '.github/actions/**',
+              '.github/actionlint*', '.github/zizmor.yml', '.pre-commit-config.yaml',
+              'scripts/check-composite-action-input-interpolation.py'];
+            let files;
+            try {
+              if (context.eventName === 'pull_request') {
+                files = await github.paginate(github.rest.pulls.listFiles, {
+                  ...context.repo, pull_number: context.issue.number, per_page: 100,
+                });
+              } else {
+                const { data } = await github.rest.repos.compareCommitsWithBasehead({
+                  ...context.repo, basehead: `${context.payload.before}...${context.sha}`,
+                });
+                files = data.files;
+              }
+            } catch {
+              core.warning('Workflow scope lookup failed; running full workflow audits.');
+            }
+            // The compare API caps files at 300; never infer no changes from a partial diff.
+            const limit = context.eventName === 'pull_request' ? 3000 : 300;
+            const changed = !files || files.length >= limit || files.some(file =>
+              [file.filename, file.previous_filename].filter(Boolean).some(name =>
+                paths.some(pattern => matchesGlob(name, pattern))));
+            core.setOutput('changed', changed);
+
       - name: Fail on tabs in workflow files
+        if: steps.scope.outputs.changed == 'true'
         run: |
           python - <<'PY'
           from __future__ import annotations
