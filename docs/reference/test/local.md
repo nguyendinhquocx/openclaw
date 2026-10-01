@@ -129,6 +129,16 @@ mitigation; production CLI exit behavior, assertions, and deadlines are unchange
 
 The script erasability gate uses Node's strip-only parser, including when package
 checks run under Bun. It selects an installed Node runtime and skips Bun's `node` shim.
+Maintainer-tooling tests that need `node:module.registerHooks` or
+`stripTypeScriptTypes` also select Node explicitly for their tooling children.
+Use `requireNodeTool("node")` and `stripNodeTypeScriptTypes` from
+`test/helpers/node-toolchain.ts`, which share that Node-selection owner, while
+keeping the Vitest worker on the selected test runtime.
+
+Isolated native worker and subprocess fixtures use `mockNativeModuleExports` from
+`test/helpers/native-module-mock.ts` for controlled module exports on either runtime.
+The mocks live until that child exits. Capture original call-through functions before
+registering replacements because Bun updates existing module namespace bindings.
 
 The test toolchain pins stable Vitest `5.0.1`, including its browser and coverage
 packages. Use `describe(name, { concurrent: false }, callback)` for ordered
