@@ -24,6 +24,7 @@ import { prepareSessionTranscriptReadTargetCore } from "./session-accessor.trans
 import { readRestoredSessionTranscript } from "./session-cold-storage-read.js";
 import type {
   SessionHistoryDelta,
+  SessionHistorySubagentFacts,
   SessionHistoryWorkerRequest,
   SessionHistoryWorkerResult,
 } from "./session-history-types.js";
@@ -66,7 +67,22 @@ function receivePage(
       queued.remainingReaders--;
       signal?.throwIfAborted();
       // Dispatch closes the group; the final receiver owns the original after earlier clones finish.
-      return queued.remainingReaders === 0 ? page : structuredClone(page);
+      if (queued.remainingReaders === 0) {
+        return page;
+      }
+      if (page.kind === "rpc" && page.page.encodedResponse) {
+        // Wire bytes are immutable; each reader still owns its mutable page metadata.
+        const { messages, ...response } = page.page.encodedResponse;
+        const copy = structuredClone({
+          ...page,
+          page: { ...page.page, encodedResponse: response },
+        });
+        return {
+          ...copy,
+          page: { ...copy.page, encodedResponse: { ...copy.page.encodedResponse, messages } },
+        };
+      }
+      return structuredClone(page);
     },
     (error: unknown) => {
       queued.remainingReaders--;
@@ -130,10 +146,22 @@ function captureHistoryRequest(request: SessionHistoryWorkerRequest): SessionHis
       sessionEntry: target.sessionEntry ? { sessionId: target.sessionEntry.sessionId } : undefined,
       ...(target.env ? { env: captureSessionTranscriptStorageEnvironment(target.env) } : {}),
     };
+    if (request.kind === "summary") {
+      return {
+        kind: request.kind,
+        params: { target: capturedTarget, query: structuredClone(request.params.query) },
+      };
+    }
     if (request.kind === "artifacts") {
       return {
         kind: request.kind,
         params: { target: capturedTarget, query: structuredClone(request.params.query) },
+      };
+    }
+    if (request.kind === "inline-visibility") {
+      return {
+        kind: request.kind,
+        params: { target: capturedTarget, lookup: { ...request.params.lookup } },
       };
     }
     const captureOptions = <T>(options: T) => ({
@@ -222,6 +250,7 @@ function captureHistoryRequest(request: SessionHistoryWorkerRequest): SessionHis
       kind: "rpc",
       params: {
         encodeResponse: params.encodeResponse,
+        compactionMetrics: params.compactionMetrics?.map((metric) => ({ ...metric })),
         entry: capturedEntry,
         provider: params.provider,
         sessionId: params.sessionId,
@@ -272,7 +301,9 @@ type SessionHistoryPageValue<Result> = Result extends { result: infer Value }
             ? Value
             : Result extends { kind: "delta" }
               ? AdmittedSessionHistoryDelta
-              : never;
+              : Result extends { kind: "inline-visibility" }
+                ? { subagentCoordination: SessionHistorySubagentFacts; assertCurrent: () => void }
+                : never;
 
 type SessionHistoryPageValues = {
   [Result in SessionHistoryWorkerResult as Result["kind"]]: SessionHistoryPageValue<Result>;
@@ -348,7 +379,8 @@ export async function readSessionHistoryPageInWorker(
       const sourceReads =
         capturedRequest.kind === "rpc" ||
         capturedRequest.kind === "http" ||
-        capturedRequest.kind === "delta"
+        capturedRequest.kind === "delta" ||
+        capturedRequest.kind === "inline-visibility"
           ? await prepareGatewaySessionStoreReadSourcesAsync({
               cfg,
               currentSource,
@@ -572,6 +604,9 @@ export async function readSessionHistoryPageInWorker(
     if (result.kind === "delta") {
       const delta: AdmittedSessionHistoryDelta = { ...result, assertCurrent };
       return delta;
+    }
+    if (result.kind === "inline-visibility") {
+      return { subagentCoordination: result.subagentCoordination, assertCurrent };
     }
     return result.kind === "rpc"
       ? result.page
