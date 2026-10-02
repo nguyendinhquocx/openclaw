@@ -401,16 +401,6 @@ jobs:
           sudo xcode-select -s /Applications/Xcode_26.1.app
           xcodebuild -version
 
-      - &apple_mermaid_cache_save
-        name: Save Apple Mermaid assets
-        if: steps.apple-mermaid-inputs.outputs.key != '' && steps.apple-mermaid-cache.outputs.cache-hit != 'true' && needs.preflight.outputs.cache_write_allowed == 'true' && github.ref == 'refs/heads/main' && contains(fromJSON('["push","schedule"]'), github.event_name)
-        continue-on-error: true
-        timeout-minutes: 2
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: apps/shared/mermaid/assets
-          key: ${{ steps.apple-mermaid-cache.outputs.cache-primary-key }}
-
       - name: Install XcodeGen / SwiftLint / SwiftFormat
         run: |
           brew install xcodegen swiftlint swiftformat
