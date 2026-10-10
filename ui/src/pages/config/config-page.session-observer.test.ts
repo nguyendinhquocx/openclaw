@@ -3,6 +3,7 @@
 import { expectDefined } from "@openclaw/normalization-core";
 import { html, render } from "lit";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { resolveThemeBranding } from "../../../../packages/gateway-protocol/src/theme.ts";
 import { createDeferred as deferred } from "../../../../test/helpers/promise.js";
 import type { GatewayBrowserClient } from "../../api/gateway.ts";
 import type { ModelCatalogEntry, ModelCatalogResult } from "../../api/types.ts";
@@ -126,7 +127,7 @@ describe("ConfigPage navigation", () => {
         ensureSchemaLoaded: async () => undefined,
         subscribe,
       },
-      theme: { serverSelection: null, subscribe },
+      theme: { branding: resolveThemeBranding(undefined), serverSelection: null, subscribe },
       overlays: { snapshot: {}, subscribe },
       webPush: { snapshot: undefined, subscribe },
     } as unknown as ApplicationContext;
@@ -172,23 +173,14 @@ describe("ConfigPage navigation", () => {
       expect(patchForm).not.toHaveBeenCalled();
       expect(removeFormValue).not.toHaveBeenCalled();
       const full = expectDefined(
-        page.querySelector<HTMLElement>('wa-radio[value="full"]'),
+        page.querySelector<HTMLInputElement>('.settings-segmented__input[value="full"]'),
         "Full tool choice",
       );
-      expect(page.querySelectorAll("wa-radio")).toHaveLength(4);
+      expect(page.querySelectorAll(".settings-segmented__input")).toHaveLength(4);
       expect(page.querySelectorAll(".settings-segmented__btn--active")).toHaveLength(
         profile ? 1 : 0,
       );
-      if (profile !== "full") {
-        const group = expectDefined(
-          full.closest<HTMLElement & { value: string }>("wa-radio-group"),
-          "tool choices",
-        );
-        group.value = "full";
-        group.dispatchEvent(new Event("change", { bubbles: true }));
-      } else {
-        full.click();
-      }
+      full.click();
       expect(patchForm).toHaveBeenCalledTimes(writes);
       if (writes > 0) {
         expect(patchForm).toHaveBeenCalledWith(["tools", "profile"], "full");
@@ -344,7 +336,7 @@ describe("ConfigPage model catalog lifecycle", () => {
       agents: { state: { agentsList: null }, subscribe },
       agentIdentity: { ensure: async () => undefined, subscribe },
       runtimeConfig: { state: { configSnapshot: {}, configSchema: {} }, subscribe },
-      theme: { serverSelection: null, subscribe },
+      theme: { branding: resolveThemeBranding(undefined), serverSelection: null, subscribe },
       overlays: { snapshot: {}, subscribe },
       config: { subscribe },
       webPush: { subscribe },
@@ -634,6 +626,7 @@ describe("ConfigPage meeting capture", () => {
         runtimeConfig,
         agentSelection: { state: { selectedId: "main" } },
         agents: { state: { agentsList: null } },
+        theme: { branding: resolveThemeBranding(undefined) },
         navigate: vi.fn(),
         config: { current: { assistantIdentity: { name: "OpenClaw" } } },
         overlays: { snapshot: { updateRunning: false, updateReconciliationPending: false } },
@@ -664,7 +657,7 @@ describe("ConfigPage meeting capture", () => {
       expect(advanced).not.toBeNull();
       expect(advanced.open).toBe(false);
       expect(advanced.querySelector("#config-section-transcripts")).not.toBeNull();
-      const toggle = capture.querySelector<HTMLElement & { checked: boolean }>("wa-switch")!;
+      const toggle = capture.querySelector<HTMLInputElement>(".settings-toggle__input")!;
       toggle.checked = false;
       toggle.dispatchEvent(new Event("change"));
       expect(runtimeConfig.state.configForm).toMatchObject({ transcripts: { enabled: false } });
