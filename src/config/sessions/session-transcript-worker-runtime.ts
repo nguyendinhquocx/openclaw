@@ -32,6 +32,7 @@ import type {
   SessionHistoryWorkerInput,
   SessionHistoryWorkerPreparedInput,
   SessionTranscriptWorkerRequest,
+  SessionTranscriptWorkerValues,
 } from "./session-transcript-worker.types.js";
 import { captureSessionTranscriptStorageEnvironment } from "./transcript-target-binding.js";
 
@@ -56,6 +57,8 @@ function projectionTarget(input: SessionHistoryWorkerPreparedInput) {
       return input.params;
     case "session-activity-summary-source":
       return input.scope;
+    case "history-page":
+      return input.request.kind === "active-accounting" ? input.target.transcript : undefined;
     default:
       return undefined;
   }
@@ -63,7 +66,7 @@ function projectionTarget(input: SessionHistoryWorkerPreparedInput) {
 
 export function runSessionBranchSummaryWorkerRequest(
   request: SessionBranchSummaryReadRequest,
-  signal: AbortSignal,
+  signal?: AbortSignal,
 ) {
   const { database, ...read } = request;
   return withSessionHistoryWorkerDatabase(
@@ -156,7 +159,6 @@ export function retainSessionHistoryWorkerDatabase(
       onRequest,
       timeoutMs = 60_000,
     ) => {
-      const validation = captureOpenClawAgentDatabaseReadValidation(database);
       let retirement: Promise<void> | undefined;
       const hostEffects = new Set<Promise<WorkerTaskResponse>>();
       return withSessionHistoryReadAdmission(
@@ -168,26 +170,36 @@ export function retainSessionHistoryWorkerDatabase(
           aborters: owned.aborters,
         },
         async (admit, requestLane) => {
+          // Reopened lanes check replacement before lending the next request a receipt.
+          const validation = captureOpenClawAgentDatabaseReadValidation(
+            database,
+            owned.nativeSequences.has(requestLane) ? "retained" : "admission",
+          );
           try {
             const reply = await admit((requestSignal, remaining) =>
               runWithSqliteDatabaseAdmissionTurn([database.path], () =>
                 requestLane.pool.run(
                   () => {
                     assertCurrent();
+                    options.prepareRead?.();
                     const input = prepare();
                     const projection = projectionTarget(input);
+                    const projectionReceipt = projection?.sessionId
+                      ? readSessionActorProjectionReceipt({
+                          path: database.path,
+                          sessionKey: projection.sessionKey,
+                          sessionId: projection.sessionId,
+                        })
+                      : undefined;
                     owned.nativeSequences.set(requestLane, ++requestLane.nativeSequence);
                     return {
                       ...input,
                       database,
                       validation: validation?.validation,
-                      projectionReceipt: projection?.sessionId
-                        ? readSessionActorProjectionReceipt({
-                            path: database.path,
-                            sessionKey: projection.sessionKey,
-                            sessionId: projection.sessionId,
-                          })
-                        : undefined,
+                      projectionReceipt: projectionReceipt && {
+                        ...projectionReceipt,
+                        ...(input.kind === "history-page" ? { contextOnly: true } : {}),
+                      },
                     } satisfies SessionTranscriptWorkerRequest;
                   },
                   {
@@ -238,7 +250,11 @@ export function retainSessionHistoryWorkerDatabase(
             ) {
               knownSource = true;
             }
-            const value = receive(received);
+            // SAFETY: The pool pairs this reply with the exact prepared request above.
+            const paired = received as SessionTranscriptWorkerValues[ReturnType<
+              typeof prepare
+            >["kind"]];
+            const value = receive(paired);
             if (reply.ok && reply.closedHistoryDatabase) {
               await settleSessionHistoryWorkerEviction(requestLane, reply.closedHistoryDatabase);
             }
