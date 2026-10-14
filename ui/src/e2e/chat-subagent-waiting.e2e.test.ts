@@ -215,14 +215,14 @@ suite.define(() => {
         const backToList = panel.getByRole("button", { name: "Back to Subagents", exact: true });
         await backToList.click();
         await panelRow.waitFor();
-        // Layout restores focus to its trigger; closing the last tab returns to
+        // Panels restores focus to its trigger; closing the last tab returns to
         // the count that opened the panel.
         await selectChatLayoutAction(activePane, "Minimize side panel");
         await indicator.waitFor();
         await expect
           .poll(() =>
             activePane
-              .getByRole("button", { name: "Layout", exact: true })
+              .getByRole("button", { name: "Panels", exact: true })
               .evaluate((element) => element.matches(":focus")),
           )
           .toBe(true);
@@ -607,7 +607,7 @@ suite.define(() => {
         const recap = activePane.locator(".chat-turn-recap");
         await recap.waitFor();
         expect((await recap.textContent())?.replace(/\s+/g, " ").trim()).toMatch(
-          /^Done in 1 minute,? 17 seconds · 4\.4k output tokens$/,
+          /^4\.4k output tokens · Done in 1 minute,? 17 seconds$/,
         );
         expect(await block.locator(".chat-turn-recap").count()).toBe(1);
         expect(await activePane.locator(".chat-group.assistant").count()).toBe(1);

@@ -49,6 +49,7 @@ import {
   normalizeMetadata,
   normalizeNotes,
   normalizePriority,
+  normalizeRunId,
   normalizeStatus,
   normalizeStringList,
   normalizeTemplateId,
@@ -357,7 +358,7 @@ export class WorkboardCoreStore extends WorkboardBoardStore {
     const notes = normalizeNotes(input.notes);
     const agentId = normalizeOptionalString(input.agentId);
     const sessionKey = normalizeOptionalString(input.sessionKey);
-    const runId = normalizeOptionalString(input.runId);
+    const runId = normalizeRunId(input.runId);
     const sourceUrl = normalizeOptionalString(input.sourceUrl);
     const normalizedExecution = normalizeExecution(input.execution);
     const execution =
@@ -573,6 +574,7 @@ export class WorkboardCoreStore extends WorkboardBoardStore {
       automationLaunch: options.automationLaunch,
       allowDependencyLinks: options.allowMetadataDependencyLinks !== false,
       preserveProofId: options.preserveProofId,
+      preserveNotificationId: options.preserveNotificationId,
     });
     if (status !== existing.status && !hasFreshLifecycleStatusSource) {
       // Status patches often spread existing metadata. Only a newly supplied
@@ -623,9 +625,7 @@ export class WorkboardCoreStore extends WorkboardBoardStore {
           : normalizeOptionalString(effectivePatch.agentId),
       sessionKey,
       runId:
-        effectivePatch.runId === undefined
-          ? existing.runId
-          : normalizeOptionalString(effectivePatch.runId),
+        effectivePatch.runId === undefined ? existing.runId : normalizeRunId(effectivePatch.runId),
       sourceUrl:
         effectivePatch.sourceUrl === undefined
           ? existing.sourceUrl
@@ -711,13 +711,8 @@ export class WorkboardCoreStore extends WorkboardBoardStore {
       return;
     }
     const parents = cardParentIds(next);
-    if (parents.length > 0) {
-      const cards = new Map(
-        (await this.store.listCardStatuses(parents)).map((card) => [card.id, card]),
-      );
-      if (!parents.every((parentId) => cards.get(parentId)?.status === "done")) {
-        throw new Error("card dependencies are not done.");
-      }
+    if (parents.length > 0 && !(await this.parentsDone(parents))) {
+      throw new Error("card dependencies are not done.");
     }
     if (next.status === "done") {
       return;
@@ -841,10 +836,7 @@ export class WorkboardCoreStore extends WorkboardBoardStore {
       const parentIds = [...cardParentIds(child), parent.id].filter(
         (id, index, ids) => ids.indexOf(id) === index,
       );
-      const cardsById = new Map(
-        (await this.store.listCardStatuses(parentIds)).map((card) => [card.id, card]),
-      );
-      if (parentIds.some((id) => cardsById.get(id)?.status !== "done")) {
+      if (!(await this.parentsDone(parentIds))) {
         throw new Error("terminal child cards cannot gain incomplete parent dependencies.");
       }
     }
@@ -882,6 +874,13 @@ export class WorkboardCoreStore extends WorkboardBoardStore {
     return await this.promoteDependencyReady(nextChild.id);
   }
 
+  protected async parentsDone(parentIds: readonly string[]): Promise<boolean> {
+    const statusById = new Map(
+      (await this.store.listCardStatuses(parentIds)).map((card) => [card.id, card.status]),
+    );
+    return parentIds.every((id) => statusById.get(id) === "done");
+  }
+
   private async dependencyTargetStatus(card: WorkboardCard, now: number): Promise<WorkboardStatus> {
     const scheduledAt = card.metadata?.automation?.scheduledAt;
     const parents = cardParentIds(card);
@@ -894,11 +893,7 @@ export class WorkboardCoreStore extends WorkboardBoardStore {
       }
       return card.status === "scheduled" ? "ready" : card.status;
     }
-    const parentIds = parents.map((parentId) => parentId.trim());
-    const parentCards = new Map(
-      (await this.store.listCardStatuses(parentIds)).map((parent) => [parent.id, parent]),
-    );
-    const parentsDone = parentIds.every((id) => parentCards.get(id)?.status === "done");
+    const parentsDone = await this.parentsDone(parents.map((parentId) => parentId.trim()));
     if (!isDependencyPromotableStatus(card.status)) {
       return card.status;
     }

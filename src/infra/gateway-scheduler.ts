@@ -75,7 +75,7 @@ const hostClock: GatewaySchedulerClock = {
 function nextMaintenanceSlot(slotMs: number, clockMs: number, everyMs: number): number {
   // A slot more than half a period ahead was not served by this run (a forward wall-clock
   // jump fired the job early); keep it so the elapsed cadence still runs on time.
-  if (slotMs - clockMs >= everyMs / 2) {
+  if (slotMs - clockMs > everyMs / 2) {
     return slotMs;
   }
   return slotMs + (Math.floor(Math.max(0, clockMs - slotMs) / everyMs) + 1) * everyMs;
@@ -131,6 +131,8 @@ export class GatewayScheduler {
     const beginClose = () => {
       controller.abort();
       materializeErrorStack(controller.signal.reason);
+      // Capture the composite reason while its weak source is still reachable.
+      materializeErrorStack(owner.signal.reason);
       for (const job of owner.jobs) {
         this.cancel(job);
       }

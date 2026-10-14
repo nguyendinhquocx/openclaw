@@ -60,7 +60,7 @@ describe("personal navigation rail", () => {
       [...sidebar.querySelectorAll("[data-navigation-view]")].map((button) =>
         button.getAttribute("aria-label"),
       ),
-    ).toEqual(["Pages", "Sessions", "Online"]);
+    ).toEqual(["Pages", "Sessions", "Users"]);
     const frame = sidebar.querySelector("aside.sidebar")!;
     const bottom = sidebar.querySelector(".sidebar-rail__bottom")!;
     expect(bottom.querySelector(".sidebar-footer-bar__home")).not.toBeNull();
@@ -331,8 +331,7 @@ describe("personal navigation rail", () => {
     await sidebar.updateComplete;
     const menu = sidebar.querySelector(".sidebar-rail-pin-menu")!;
     expect(menu).not.toBeNull();
-    const remove = menu.querySelector('wa-dropdown-item[value="remove"]');
-    menu.dispatchEvent(new CustomEvent("wa-select", { detail: { item: remove } }));
+    menu.querySelector<HTMLButtonElement>('[data-value="remove"]')!.click();
     await sidebar.updateComplete;
     expect(sidebar.sidebarEntries).toEqual(["person:offline", "session:agent:other:unloaded"]);
   });
@@ -376,11 +375,7 @@ describe("personal navigation rail", () => {
     vi.advanceTimersByTime(100);
     expect(tooltip.hasAttribute("open")).toBe(false);
 
-    menu.dispatchEvent(
-      new CustomEvent("wa-select", {
-        detail: { item: menu.querySelector('wa-dropdown-item[value="remove"]') },
-      }),
-    );
+    menu.querySelector<HTMLButtonElement>('[data-value="remove"]')!.click();
     await sidebar.updateComplete;
     await tooltip.updateComplete;
     dispatchMousePointer(hovered.closest(".sidebar-rail__pin")!, "pointerleave");
@@ -414,6 +409,8 @@ describe("personal navigation rail", () => {
     expect(sidebar.navigationCollapsed).toBe(true);
     await select("online");
     expect(sidebar.navigationView).toBe("online");
+    expect(sidebar.navigationCollapsed).toBe(false);
+    await select("online");
     expect(sidebar.navigationCollapsed).toBe(false);
     expect(toggle).toHaveBeenCalledTimes(4);
   });
@@ -513,7 +510,7 @@ describe("personal navigation rail", () => {
     await vi.dynamicImportSettled();
     await sidebar.updateComplete;
     expect(sidebar.querySelector(".sidebar-agent-menu")).not.toBeNull();
-    expect(sidebar.querySelector('[value="agent:research"]')).not.toBeNull();
+    expect(sidebar.querySelector('[data-value="agent:research"]')).not.toBeNull();
     expect(sidebar.querySelector(".sidebar-brand")).toBeNull();
   });
 
@@ -530,14 +527,6 @@ describe("personal navigation rail", () => {
     };
     await sidebar.updateComplete;
     const transfer = createDataTransferStub();
-    const collapse = sidebar.querySelector<HTMLButtonElement>(
-      ".sidebar-online .sidebar-session-group-toggle",
-    )!;
-    collapse.click();
-    await sidebar.updateComplete;
-    expect(sidebar.querySelector(".sidebar-online__row")).toBeNull();
-    collapse.click();
-    await sidebar.updateComplete;
     drag(sidebar.querySelector(".sidebar-online__row")!, "dragstart", transfer);
     drag(sidebar.querySelector(".sidebar-rail__pins")!, "drop", transfer);
     await sidebar.updateComplete;

@@ -25,6 +25,7 @@ const repositoryScriptEntries = [
   "apps/linux/scripts/test-runtime-boundary.mjs!",
   "apps/linux/scripts/stage-runtime.mjs!",
   "apps/linux/scripts/test-stage-runtime.mjs!",
+  "apps/linux/scripts/test-stage-package.mjs!",
   // The Python onboarding driver installs this synthetic CLI by path.
   "apps/linux/tests/fixtures/onboarding-cli.mjs!",
   // The Linux onboarding proof builds its card fixture through Vite's --config option.
@@ -35,6 +36,8 @@ const repositoryScriptEntries = [
   "apps/linux/scripts/test-native-control-auth.mjs!",
   "scripts/render-proof-video.mts!",
   "scripts/ci-shard-timings-refresh.mts!",
+  // db:postgres:gen/check invoke this generator through the source loader.
+  "scripts/generate-postgres-schema.mts!",
   // CI preflight executes the manifest from its trusted harness checkout.
   "scripts/ci-build-manifest.mjs!",
   // CI security-fast runs this from its trusted harness checkout.
@@ -61,9 +64,13 @@ const repositoryScriptEntries = [
   "scripts/bench-channel-turn.mts!",
   // Maintainers invoke this isolated transcript-rewrite benchmark by path.
   "scripts/bench-session-manager-rewrite.ts",
-  // The team-shaped fixture README invokes this measurement CLI by path.
+  // The team-shaped fixture README invokes these measurement CLIs by path.
   "scripts/perf/team-shape-measure.ts",
+  "scripts/perf/transcript-broadcast-measure.ts",
+  "scripts/perf/post-restart-burst-measure.ts",
   "scripts/bundle-a2ui.mts!",
+  // The standalone build guide invokes this builder by path.
+  "scripts/build-bun-standalone.mjs!",
   "scripts/build-discord-activity-sdk.mts!",
   // Plugin package asset hooks invoke the browser builder by path.
   "scripts/build-plugin-control-ui.mts!",
@@ -658,15 +665,22 @@ function workspacePackage(packageDir: string, extraEntries: readonly string[] = 
   } as const;
 }
 
-function compileNativeProtocolConsumer(source: string, filePath: string): string {
-  if (path.resolve(filePath) !== path.resolve("scripts/prepare-native-protocol.mjs")) {
-    return source;
+function compileDynamicMjsConsumers(source: string, filePath: string): string {
+  if (path.resolve(filePath) === path.resolve("scripts/ci-build-manifest.mjs")) {
+    // The trusted manifest resolves this planner from the target checkout by file URL.
+    return source.replace(
+      /(const changedNodeTestPlan = await )importTargetPlan\([\s\S]*?\n\);/u,
+      '$1import("./lib/ci-changed-node-test-plan.mts");',
+    );
   }
-  // The temporary esbuild bundle exports this source module's unchanged API.
-  return source.replace(
-    "import(pathToFileURL(bundlePath).href)",
-    'import("../packages/gateway-protocol/scripts/native-codegen.ts")',
-  );
+  if (path.resolve(filePath) === path.resolve("scripts/prepare-native-protocol.mjs")) {
+    // The temporary esbuild bundle exports this source module's unchanged API.
+    return source.replace(
+      "import(pathToFileURL(bundlePath).href)",
+      'import("../packages/gateway-protocol/scripts/native-codegen.ts")',
+    );
+  }
+  return source;
 }
 
 function bundledPluginWorkspace(extraEntries: readonly string[] = []) {
@@ -738,7 +752,7 @@ const config = {
   compilers: {
     yml: compileWorkflowConsumers,
     sh: compileShellConsumers,
-    mjs: compileNativeProtocolConsumer,
+    mjs: compileDynamicMjsConsumers,
   },
   ignoreFiles: [
     // Production mode excludes dev/maintainer executables. The full-tree
