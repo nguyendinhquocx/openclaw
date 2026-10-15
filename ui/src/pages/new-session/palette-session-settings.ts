@@ -3,7 +3,7 @@ import { t } from "../../i18n/index.ts";
 import { registerCommandPaletteEnglish } from "../../i18n/locales/en-command-palette.ts";
 import { registerNewSessionSetupEnglish } from "../../i18n/locales/en-new-session-setup.ts";
 import { pathDisplayName } from "../../lib/path-display.ts";
-import type { ControllerHost } from "../../lit/subscriptions-controller.ts";
+import type { ControllerHost } from "../../lib/subscriptions-controller.ts";
 import type { NewSessionDraftController } from "./draft-controller.ts";
 import { environmentCloudDisabledReason } from "./hosted-environments.ts";
 import type { PaletteSessionPreferences } from "./palette-session-preferences.ts";
@@ -213,38 +213,33 @@ export class PaletteSessionSettings {
     const groups = machines
       .map((machine) => ({
         machine,
-        choices:
-          machine.disabledReason || machine.hosted
-            ? [
-                {
-                  id: "",
-                  label: t(
-                    machine.disabledReason
-                      ? "newSession.environmentUnavailable"
-                      : "newSession.hostedWorkspace",
-                  ),
-                },
-              ].filter(
-                (choice) =>
-                  !query ||
-                  (machine.label + " " + choice.label).toLocaleLowerCase().includes(query),
-              )
-            : [
-                {
-                  id: "",
-                  label: machine.remote
-                    ? t("newSession.newWorkspace")
-                    : pathDisplayName(place.workspacePath()) || t("newSession.folderPlaceholder"),
-                },
-                ...draft.browser.projects.map((project) => ({
-                  id: project.id,
-                  label: project.displayName,
-                })),
-              ].filter(
-                (choice) =>
-                  !query ||
-                  (machine.label + " " + choice.label).toLocaleLowerCase().includes(query),
-              ),
+        choices: (machine.disabledReason || machine.hosted
+          ? [
+              {
+                id: "",
+                label: t(
+                  machine.disabledReason
+                    ? "newSession.environmentUnavailable"
+                    : "newSession.hostedWorkspace",
+                ),
+              },
+            ]
+          : [
+              {
+                id: "",
+                label: machine.remote
+                  ? t("newSession.newWorkspace")
+                  : pathDisplayName(place.workspacePath()) || t("newSession.folderPlaceholder"),
+              },
+              ...draft.browser.projects.map((project) => ({
+                id: project.id,
+                label: project.displayName,
+              })),
+            ]
+        ).filter(
+          (choice) =>
+            !query || (machine.label + " " + choice.label).toLocaleLowerCase().includes(query),
+        ),
       }))
       .filter((group) => group.choices.length);
     return {
