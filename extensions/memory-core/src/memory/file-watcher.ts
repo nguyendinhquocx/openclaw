@@ -82,6 +82,14 @@ function sharedScopes(members: Iterable<ObservationMember>): WatchScope[] {
   return [...scopes.values()];
 }
 
+function sharedSelectionKey(members: Iterable<ObservationMember>): string {
+  return JSON.stringify(
+    [
+      ...new Set([...members].flatMap((member) => member.policy.selectionKeys(member.group))),
+    ].toSorted(),
+  );
+}
+
 function refreshShared(shared: SharedObservation): Promise<void> {
   shared.refreshRequested = true;
   return (shared.refreshing ??= shared.subscription.ready
@@ -109,7 +117,7 @@ function acquireObservation(
   mode: "auto" | "poll",
   pollIntervalMs: number,
   shareable: boolean,
-): SharedObservation {
+): { shared: SharedObservation; ready: Promise<void> } {
   const key = JSON.stringify([
     member.group.root.rootDir,
     member.group.identity,
@@ -119,9 +127,24 @@ function acquireObservation(
   const candidates = sharedObservations.get(key) ?? new Set<SharedObservation>();
   for (const shared of candidates) {
     if (shareable && shared.shareable && sharedScopes([...shared.members, member]).length <= 128) {
+      const selection = sharedSelectionKey(shared.members);
       shared.members.add(member);
-      void refreshShared(shared);
-      return shared;
+      if (selection !== sharedSelectionKey(shared.members)) {
+        return { shared, ready: refreshShared(shared) };
+      }
+      const ready = shared.refreshing ?? shared.subscription.ready;
+      return {
+        shared,
+        // A ready subscription won't replay its baseline for the joining member.
+        // Publish only to that member, after the caller enrolls its observation.
+        ready:
+          !shared.refreshing && shared.subscription.health().state === "ready"
+            ? ready.then(() => {
+                member.invalidate({ reason: "reconcile" });
+                member.health(shared.subscription.health());
+              })
+            : ready,
+      };
     }
   }
   const members = new Set([member]);
@@ -171,13 +194,16 @@ function acquireObservation(
   };
   candidates.add(shared);
   sharedObservations.set(key, candidates);
-  return shared;
+  return { shared, ready: shared.subscription.ready };
 }
 
 function releaseObservation({ member, shared }: Observation): Promise<void> {
+  const selection = sharedSelectionKey(shared.members);
   shared.members.delete(member);
   if (shared.members.size) {
-    void refreshShared(shared);
+    if (selection !== sharedSelectionKey(shared.members)) {
+      void refreshShared(shared);
+    }
     return Promise.resolve();
   }
   const candidates = sharedObservations.get(shared.key);
@@ -324,12 +350,10 @@ export class MemoryFileWatcher {
               scopes,
               policy: this.policy,
               invalidate: (hint) => {
-                this.options.runInBackgroundContext(() => this.dirty(member.group, hint));
+                this.deliver(() => this.dirty(member.group, hint));
               },
               health: (health) => {
-                this.options.runInBackgroundContext(() =>
-                  this.onHealth(health, mode, pollIntervalMs),
-                );
+                this.deliver(() => this.onHealth(health, mode, pollIntervalMs));
               },
               isolate: () => {
                 if (!this.isolatedRoots.has(group.root)) {
@@ -338,17 +362,17 @@ export class MemoryFileWatcher {
                 }
               },
               unavailable: (error, code) => {
-                this.options.runInBackgroundContext(() => this.unavailable(error, code));
+                this.deliver(() => this.unavailable(error, code));
               },
             };
-            const shared = acquireObservation(
+            const { shared, ready: observationReady } = acquireObservation(
               member,
               mode,
               pollIntervalMs,
               !this.isolatedRoots.has(group.root),
             );
             this.observations.set(id, { id, member, shared });
-            ready.push(shared.refreshing ?? shared.subscription.ready);
+            ready.push(observationReady);
           }
           await Promise.all(ready);
         }
@@ -364,6 +388,26 @@ export class MemoryFileWatcher {
           void this.refresh();
         }
       }));
+  }
+
+  private deliver(run: () => void): void {
+    let admitted = false;
+    try {
+      this.options.runInBackgroundContext(() => {
+        admitted = true;
+        run();
+      });
+    } catch (error) {
+      if (admitted) {
+        throw error;
+      }
+      // Native notifications can arrive after admission closes but before cleanup joins them.
+      this.retryExhausted = true;
+      this.unavailable(error);
+      clearTimeout(this.watchTimer);
+      this.watchTimer = undefined;
+      this.pendingChange = false;
+    }
   }
 
   private dirty(group: MemoryObservation, hint: WatchInvalidation): void {
@@ -440,7 +484,7 @@ export class MemoryFileWatcher {
     const retirement = this.retire([...this.observations.values()]);
     this.recovering = retirement.finally(() => {
       this.recovering = undefined;
-      if (this.closed || this.degraded || this.closeErrors.length) {
+      if (this.closed || this.degraded || this.closeErrors.length || this.retryExhausted) {
         return;
       }
       const delay = RETRY_DELAYS_MS[this.retries++];

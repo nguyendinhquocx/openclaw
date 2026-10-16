@@ -31,11 +31,12 @@ import { renderGatewayStatus } from "./solid/gateway-status.tsx";
 import { Icon } from "./solid/icon.tsx";
 import { ShortcutHint } from "./solid/kbd.tsx";
 import { renderSessionLeadingState, SessionRowBadges } from "./solid/session-presentation.tsx";
-import "./theme-brand-icon.ts";
+import "./theme-brand-icon.tsx";
 
 export type AppSidebarRenderHost = AppSidebarSessionNavigationElement & {
   readonly nativeGatewaySnapshot: NativeGatewaysSnapshot | null;
-  readonly people: import("./sidebar-people-controller.ts").SidebarPeopleController;
+  readonly people: import("./sidebar-people.ts").SidebarPeoplePreferences;
+  readonly peopleView?: ReturnType<typeof import("./sidebar-people.ts").createSidebarPeople>;
   renderPinnedSidebarSession(session: () => SidebarRecentSession): JSX.Element;
   toggleSection(sectionId: string): void;
 };
