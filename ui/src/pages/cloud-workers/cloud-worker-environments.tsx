@@ -124,11 +124,10 @@ export function CloudWorkerEnvironments(props: { machines: () => JSX.Element }) 
     ensureInitialData: () => queueMicrotask(() => void load()),
     onPageActivation: () => void load(),
   });
-  // Config and permission receipts invalidate the inventory at their synchronous owners.
   function syncInventoryInputs() {
     const current = [
       context.runtimeConfig.state.configSnapshot?.appliedConfigHash,
-      canCall("crabbox.images.list"),
+      canCallGatewayMethod(context.gateway.snapshot, "crabbox.images.list", "operator.admin"),
     ] as const;
     const changed = previousInputs?.some((value, index) => value !== current[index]);
     previousInputs = current;
@@ -137,6 +136,7 @@ export function CloudWorkerEnvironments(props: { machines: () => JSX.Element }) 
     }
   }
   onSettled(() => {
+    // Config and permission receipts invalidate the inventory at their synchronous owners.
     const stop = runtime.subscribe(syncInventoryInputs);
     syncInventoryInputs();
     return stop;
