@@ -34,36 +34,22 @@ export function sourceRows(database: EngineConnection, nativeBootstrap: boolean)
     identities:
       nativeBootstrap && !tableExists(database, "device_identities")
         ? []
-        : executeSqliteQuerySync(
-            database,
-            db.selectFrom("device_identities").selectAll().orderBy("identity_key"),
-          ).rows,
+        : executeSqliteQuerySync(database, db.selectFrom("device_identities").selectAll()).rows,
     tokens:
       nativeBootstrap && !tableExists(database, "device_auth_tokens")
         ? []
-        : executeSqliteQuerySync(
-            database,
-            db.selectFrom("device_auth_tokens").selectAll().orderBy("device_id").orderBy("role"),
-          ).rows,
+        : executeSqliteQuerySync(database, db.selectFrom("device_auth_tokens").selectAll()).rows,
     origins:
       nativeBootstrap && !tableExists(database, "gateway_origin_device_tokens")
         ? []
         : executeSqliteQuerySync(
             database,
-            db
-              .selectFrom("gateway_origin_device_tokens")
-              .selectAll()
-              .orderBy("gateway_scope")
-              .orderBy("device_id")
-              .orderBy("role"),
+            db.selectFrom("gateway_origin_device_tokens").selectAll(),
           ).rows,
     approvals:
       nativeBootstrap && !tableExists(database, "exec_approvals_config")
         ? []
-        : executeSqliteQuerySync(
-            database,
-            db.selectFrom("exec_approvals_config").selectAll().orderBy("config_key"),
-          ).rows,
+        : executeSqliteQuerySync(database, db.selectFrom("exec_approvals_config").selectAll()).rows,
   });
 }
 
@@ -155,7 +141,10 @@ export function extractSocket(row: ApprovalRow | undefined) {
     return { socket: undefined, policy: undefined };
   }
   const invalid = () =>
-    new Error("Client credential migration found invalid socket credentials or projections.");
+    Object.assign(
+      new Error("Client credential migration found invalid socket credentials or projections."),
+      { code: "CLIENT_CREDENTIAL_SOCKET_INVALID" },
+    );
   let policy: unknown;
   try {
     policy = JSON.parse(row.raw_json);
@@ -168,11 +157,10 @@ export function extractSocket(row: ApprovalRow | undefined) {
   }
   const socketPath = isRecord(socket) ? socket.path : undefined;
   const socketToken = isRecord(socket) ? socket.token : undefined;
+  // raw_json is canonical; historical socket projections may be stale.
   if (
     (socketPath !== undefined && typeof socketPath !== "string") ||
-    (socketToken !== undefined && typeof socketToken !== "string") ||
-    (socketPath ?? null) !== row.socket_path ||
-    (socketToken ? 1 : 0) !== row.has_socket_token
+    (socketToken !== undefined && typeof socketToken !== "string")
   ) {
     throw invalid();
   }
