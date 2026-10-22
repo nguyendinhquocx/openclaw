@@ -52,14 +52,14 @@ const CONTROL_UI_LOCALE_GZIP_BYTES = 300 * KIB;
 // Small, explicit headroom over the optimized baseline. Budget changes should
 // accompany an intentional loading or chunking decision.
 const controlUiPerformanceBudgets = {
-  // Schema runtime deferrals use 7/25/20 requests; retain two per path.
+  // Runtime English deferrals use 7/24/19 requests; retain two per path.
   startupJsRequests: 9,
-  chatBootJsRequests: 27,
-  newBootJsRequests: 22,
-  // Page-owned English copy measures 1,435,673 B for Chat and 1,000,561 B
-  // for New Session. Retain at least 32 KiB of headroom for each route.
-  chatBootJsGzipBytes: 1_500_000,
-  newBootJsGzipBytes: 1_035_000,
+  chatBootJsRequests: 26,
+  newBootJsRequests: 21,
+  // Runtime English: 1,416,919 B Chat and 953,531 B New Session.
+  // Preserve each route's relative headroom against its measured merge base.
+  chatBootJsGzipBytes: 1_471_671,
+  newBootJsGzipBytes: 967_647,
   startupCssRequests: 1,
   // Solid 2 action/optimistic runtime adoption; offset tracked by HF-STARTUP-BUDGET.
   startupJsGzipBytes: 325_081,
@@ -518,6 +518,10 @@ export function formatControlUiPerformanceReport(
     lines.push("  route boot accounting: unavailable (build has no route preload templates)");
   }
   if (baseMetrics) {
+    const startupGrowth = metrics.startup.js.gzipBytes - baseMetrics.startup.js.gzipBytes;
+    lines.push(
+      `  startup JS gzip vs base: ${baseMetrics.startup.js.gzipBytes} B -> ${metrics.startup.js.gzipBytes} B (${startupGrowth >= 0 ? "+" : ""}${startupGrowth} B); requests ${baseMetrics.startup.js.requests} -> ${metrics.startup.js.requests}`,
+    );
     for (const area of ["startup", "largest"] as const) {
       const growth = metrics[area].css.gzipBytes - baseMetrics[area].css.gzipBytes;
       lines.push(
@@ -644,7 +648,7 @@ function validateExplicitStartupJsBytes(
   }
 }
 
-export function runControlUiPerformanceCheck(
+function runControlUiPerformanceCheck(
   distDir: string,
   budgets: Readonly<typeof CONTROL_UI_PERFORMANCE_BUDGETS> = CONTROL_UI_PERFORMANCE_BUDGETS,
   baselinePath = DEFAULT_STARTUP_BUDGET_BASELINE_PATH,
