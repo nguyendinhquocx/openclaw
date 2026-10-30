@@ -3,6 +3,73 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { useLazyEnglishTest } from "./lazy-english.test-support.ts";
 
 const loadI18n = useLazyEnglishTest();
+
+it("loads inspector-only context copy with the panel while keeping the breakdown readable", async () => {
+  const { en, manager } = await loadI18n({
+    common: { health: "Gesundheit" },
+    chat: { sessionDetails: { context: "Kontext" } },
+  });
+  const details = en.chat.sessionDetails;
+  await manager.setLocale("de");
+
+  await import("../pages/chat/components/chat-context-breakdown.tsx");
+
+  expect(manager.t("chat.sessionDetails.context")).toBe("Kontext");
+  expect(manager.t("chat.sessionDetails.contextMessages")).toBe("Messages & other");
+  expect(manager.t("chat.sessionDetails.contextFiles")).toBe("Workspace files");
+  expect(manager.t("chat.sessionDetails.contextTools")).toBe("Tool schemas");
+  expect(manager.t("chat.sessionDetails.contextSkills")).toBe("Skills catalog");
+  expect(manager.t("chat.sessionDetails.contextSystem")).toBe("System instructions");
+  expect(manager.t("chat.sessionDetails.contextUnverified")).toBe("Unverified");
+  expect(manager.t("chat.sessionDetails.contextExactCount", { used: "10", limit: "100" })).toBe(
+    "10 of 100 tokens",
+  );
+  expect(manager.t("chat.sessionDetails.contextOpen")).toBe("View context");
+  expect(manager.t("chat.sessionDetails.contextLoading")).toBe("Loading context breakdown…");
+  expect(manager.t("chat.sessionDetails.contextError")).toBe(
+    "Couldn't load the context breakdown. Try refreshing.",
+  );
+  expect(manager.t("chat.sessionDetails.contextOffline")).toBe(
+    "Connect to the Gateway to load the context breakdown.",
+  );
+  const inspectorCopy = {
+    contextAgentWorkspace: "Agent workspace",
+    contextProject: "Project",
+    contextPersonal: "Personal instructions",
+    contextOtherFiles: "Other files",
+    contextSystemTools: "System tools",
+    contextMcpTools: "MCP tools",
+    contextClientTools: "Client tools",
+    contextAvailableOnDemand: "Tools loaded on use",
+    contextDeferredEstimate: "Schema sizes, not current usage.",
+    contextFree: "Free space",
+    contextUnavailable: "No matching context report. Send a message to capture one.",
+    contextReserve: "{tokens} tokens reserved outside this budget",
+    contextFreeShort: "{tokens} free",
+    contextReserveShort: "+{tokens} reserved",
+    contextInputShort: "in",
+    contextOutputShort: "out",
+    contextSearch: "Search {category}",
+    contextSearchCount: "Search {count} · {category}",
+    contextSearchSkills: "Search {count} skills",
+    contextSearchFiles: "Search {count} files",
+    contextSearchTools: "Search {count} tools",
+    contextShowAll: "Show all {count}",
+  };
+  for (const key of Object.keys(inspectorCopy)) {
+    expect(manager.t(`chat.sessionDetails.${key}`)).toBe(`chat.sessionDetails.${key}`);
+  }
+
+  await import("../pages/chat/components/chat-context-panel.tsx");
+
+  for (const [key, copy] of Object.entries(inspectorCopy)) {
+    expect(manager.t(`chat.sessionDetails.${key}`)).toBe(copy);
+  }
+  expect(manager.t("chat.sessionDetails.context")).toBe("Kontext");
+  expect(manager.t("common.health")).toBe("Gesundheit");
+  expect(manager.getLocale()).toBe("de");
+  expect(en.chat.sessionDetails).toBe(details);
+});
 let restoreElementRegistration: (() => void) | undefined;
 beforeEach(() => {
   // Cold imports rerun module registrars; jsdom keeps its element registry.
@@ -18,6 +85,40 @@ beforeEach(() => {
   restoreElementRegistration = () => registration.mockRestore();
 });
 afterEach(() => restoreElementRegistration?.());
+
+it.each([false, true])(
+  "preserves context inspector copy in either registration order (optional first=%s)",
+  async (optionalFirst) => {
+    const { en, manager } = await loadI18n({
+      chat: { sessionDetails: { context: "Kontext", contextSearch: "Suchen {category}" } },
+    });
+    const { registerEnglishCatalog } = await import("../lib/reactive/i18n.ts");
+    const { registerChatDetailsEnglish } = await import("./locales/en-chat-details.ts");
+    const { registerChatSessionEnglish } = await import("./locales/en-chat-session.ts");
+    const { registerChatSessionOptionalEnglish } =
+      await import("./locales/en-chat-session-optional.ts");
+    await manager.setLocale("de");
+    const registrars = [registerChatDetailsEnglish, registerChatSessionOptionalEnglish];
+    const ordered = optionalFirst ? registrars.toReversed() : registrars;
+    registerEnglishCatalog(ordered[0]!);
+    const details = en.chat.sessionDetails;
+    registerEnglishCatalog(ordered[1]!);
+    registerChatDetailsEnglish();
+    registerChatSessionEnglish();
+
+    expect(manager.t("chat.sessionDetails.contextProject")).toBe("Project");
+    expect(manager.t("chat.sessionDetails.contextFreeShort", { tokens: "1k" })).toBe("1k free");
+    expect(manager.t("chat.sessionDetails.contextSearch", { category: "Skills" })).toBe(
+      "Suchen Skills",
+    );
+    expect(manager.t("chat.sessionDetails.context")).toBe("Kontext");
+    expect(manager.t("chat.sessionDetails.contextMessages")).toBe("Messages & other");
+    expect(manager.t("chat.sessionDetails.contextLoading")).toBe("Loading context breakdown…");
+    expect(manager.t("chat.sessionDetails.title")).toBe("Details");
+    expect(manager.getLocale()).toBe("de");
+    expect(en.chat.sessionDetails).toBe(details);
+  },
+);
 
 it.each([
   [
@@ -208,6 +309,7 @@ it("keeps sidebar and chat actions readable until the session management dialog 
     import("../lib/chat/complete-history.ts"),
     import("../lib/sessions/session-archive-reason.ts"),
     import("../lib/sessions/session-menu-navigation.ts"),
+    import("../pages/chat/components/chat-model-account-control.ts"),
     import("../pages/chat/chat-pane-native-session-actions.ts"),
     import("../pages/chat/chat-pane-placement.ts"),
   ]);
@@ -221,6 +323,13 @@ it("keeps sidebar and chat actions readable until the session management dialog 
   );
   expect(manager.t("sessionsView.goal")).toBe("Ziel");
   expect(en.sessionsView).toBe(sessionsView);
+  expect(manager.t("profilePage.modelAccounts.loadMore")).toBe("Load more saved accounts");
+  expect(manager.t("profilePage.modelAccounts.inventoryFailed")).toBe(
+    "Could not load saved accounts. Refresh to retry.",
+  );
+  expect(manager.t("profilePage.modelAccounts.connectAction")).toBe(
+    "profilePage.modelAccounts.connectAction",
+  );
 
   await import("../components/personal-session-group-dialog-view.tsx");
   expect(manager.t("sessionsView.searchGroups")).toBe("Search groups");
@@ -228,6 +337,9 @@ it("keeps sidebar and chat actions readable until the session management dialog 
   expect(manager.t("sessionsView.goal")).toBe("Ziel");
   expect(manager.getLocale()).toBe("de");
   expect(en.sessionsView).toBe(sessionsView);
+
+  await import("../pages/profile/model-accounts.tsx");
+  expect(manager.t("profilePage.modelAccounts.connectAction")).toBe("Sign in");
 });
 
 it("keeps a cold roster metadata failure readable before its view catalog loads", async () => {
